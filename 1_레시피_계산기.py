@@ -162,14 +162,16 @@ col1, col2, col3 = st.columns(3)
 with col1:
     # ▼▼▼▼▼ 이 부분을 수정하세요 ▼▼▼▼▼
     st.selectbox("장비 사양", options=[
-        '300A 이하',
-        '300A 초과 - 600A 이하',
-        '600A 초과 - 900A 이하',
-        '900A 초과 - 1200A 이하',
-        '1200A 초과 - 1500A 이하',
-        '1500A 초과 - 1800A 이하',
-        '1800A 초과 - 2000A 이하'
+        '60A - 300A',
+        '120A - 600A',
+        '180A - 900A',
+        '240A - 1200A',
+        '300A - 1500A',
+        '360A - 1800A',
+        '420A - 2000A'
     ], key='equipment_spec')
+    help = "테스트 전류에 맞는 사양을 선택해 주세요. 사양에 맞지 않는 전류 계산 시, 효율 계산이 정확하지 않을 수 있습니다."
+
     st.number_input("대기전력 (W)", min_value=0.0, step=1.0, key='standby_power', format="%.2f")
     st.number_input("Drop전압 (V)", min_value=0.0, max_value=0.99, step=0.01, format="%.2f", key='drop_voltage')
 
