@@ -86,12 +86,15 @@ def get_efficiency(mode, voltage, current, equipment_spec):
     else:  # Rest 모드
         return 1.0
 
-    # 2. 장비 사양 문자열을 분석하여 배수 결정
-    scaling_factor = 1.0
-    if '초과' in equipment_spec:
-        # 예: '900A 초과 - 1200A 이하' -> '900' 숫자 추출
-        base_current_for_scaling = int(equipment_spec.split('A')[0])
-        scaling_factor = base_current_for_scaling / 300.0
+    # 2. 장비 사양 문자열을 분석하여 배수 결정 (로직 수정)
+    try:
+        # 예: '120A - 600A' -> ' 600A' -> '600' -> 600
+        max_current_str = equipment_spec.split('-')[1].strip().replace('A', '')
+        max_current = int(max_current_str)
+        scaling_factor = max_current / 300.0
+    except (IndexError, ValueError):
+        # 문자열 분석에 실패할 경우 기본 배수인 1로 설정
+        scaling_factor = 1.0
 
     # 3. 배수를 적용하여 새로운 전류 축 생성
     current_axis_to_use = np.copy(base_current_axis)
