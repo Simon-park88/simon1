@@ -161,7 +161,7 @@ st.markdown("---")
 st.subheader("장비 사양 입력")
 
 col1, col2, col3 = st.columns(3)
-col1, col2, col3 = st.columns(3)
+
 with col1:
     # ▼▼▼▼▼ 이 부분을 수정하세요 ▼▼▼▼▼
     st.selectbox("장비 사양", options=[
