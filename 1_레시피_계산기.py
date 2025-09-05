@@ -86,11 +86,12 @@ def interpolate_2d(x, y, x_points, y_points, z_values):
 
     return result
 
+
 def get_efficiency(mode, voltage, current, equipment_spec):
     """모드와 장비 사양에 따라 적절한 효율을 계산"""
     current = abs(current)
 
-    # 1. 모드에 따라 사용할 테이블과 기준 전류 선택
+    # 1. 모드에 따라 사용할 기본 테이블 선택
     if mode == 'Charge':
         base_current_axis = charge_currents
         voltages_axis = charge_voltages
@@ -102,17 +103,21 @@ def get_efficiency(mode, voltage, current, equipment_spec):
     else:  # Rest 모드
         return 1.0
 
-    # 2. 장비 사양에 따라 전류 축(Axis) 조정
-    if equipment_spec == '600A':
-        # 300A 기준 전류값에서 마지막 값(2000)을 제외하고 모두 2배로 스케일링
-        current_axis_to_use = np.copy(base_current_axis)
-        current_axis_to_use[:-1] = current_axis_to_use[:-1] * 2
-    else:  # 300A 장비일 경우
-        current_axis_to_use = base_current_axis
+    # 2. 장비 사양 문자열을 분석하여 배수 결정
+    scaling_factor = 1.0
+    if '초과' in equipment_spec:
+        # 예: '900A 초과 - 1200A 이하' -> '900' 숫자 추출
+        base_current_for_scaling = int(equipment_spec.split('A')[0])
+        scaling_factor = base_current_for_scaling / 300.0
 
-    # 3. 최종적으로 결정된 축과 테이블로 보간법 수행
+    # 3. 배수를 적용하여 새로운 전류 축 생성
+    current_axis_to_use = np.copy(base_current_axis)
+    if scaling_factor > 1.0:
+        # 0A와 마지막 값(2500A)을 제외한 중간 값들만 스케일링
+        current_axis_to_use[1:-1] = base_current_axis[1:-1] * scaling_factor
+
+    # 4. 최종적으로 결정된 축과 테이블로 보간법 수행
     return interpolate_2d(voltage, current, voltages_axis, current_axis_to_use, efficiencies_table)
-
 
 # --- 2. 'st.session_state' 초기화 ---
 # ... (이전 초기화 코드)
@@ -153,8 +158,18 @@ st.markdown("---")
 st.subheader("장비 사양 입력")
 
 col1, col2, col3 = st.columns(3)
+col1, col2, col3 = st.columns(3)
 with col1:
-    st.selectbox("장비 사양", options=['300A', '600A'], key='equipment_spec')
+    # ▼▼▼▼▼ 이 부분을 수정하세요 ▼▼▼▼▼
+    st.selectbox("장비 사양", options=[
+        '300A 이하',
+        '300A 초과 - 600A 이하',
+        '600A 초과 - 900A 이하',
+        '900A 초과 - 1200A 이하',
+        '1200A 초과 - 1500A 이하',
+        '1500A 초과 - 1800A 이하',
+        '1800A 초과 - 2000A 이하'
+    ], key='equipment_spec')
     st.number_input("대기전력 (W)", min_value=0.0, step=1.0, key='standby_power', format="%.2f")
     st.number_input("Drop전압 (V)", min_value=0.0, max_value=0.99, step=0.01, format="%.2f", key='drop_voltage')
 

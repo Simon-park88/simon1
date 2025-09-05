@@ -74,6 +74,7 @@ def get_efficiency(mode, voltage, current, equipment_spec):
     """모드와 장비 사양에 따라 적절한 효율을 계산"""
     current = abs(current)
 
+    # 1. 모드에 따라 사용할 기본 테이블 선택
     if mode == 'Charge':
         base_current_axis = charge_currents
         voltages_axis = charge_voltages
@@ -82,17 +83,24 @@ def get_efficiency(mode, voltage, current, equipment_spec):
         base_current_axis = discharge_currents
         voltages_axis = discharge_voltages
         efficiencies_table = discharge_efficiencies
-    else:
+    else:  # Rest 모드
         return 1.0
 
-    if equipment_spec == '600A':
-        current_axis_to_use = np.copy(base_current_axis)
-        current_axis_to_use[1:-1] = current_axis_to_use[1:-1] * 2  # 0과 마지막 값 제외하고 2배
-    else:
-        current_axis_to_use = base_current_axis
+    # 2. 장비 사양 문자열을 분석하여 배수 결정
+    scaling_factor = 1.0
+    if '초과' in equipment_spec:
+        # 예: '900A 초과 - 1200A 이하' -> '900' 숫자 추출
+        base_current_for_scaling = int(equipment_spec.split('A')[0])
+        scaling_factor = base_current_for_scaling / 300.0
 
+    # 3. 배수를 적용하여 새로운 전류 축 생성
+    current_axis_to_use = np.copy(base_current_axis)
+    if scaling_factor > 1.0:
+        # 0A와 마지막 값(2500A)을 제외한 중간 값들만 스케일링
+        current_axis_to_use[1:-1] = base_current_axis[1:-1] * scaling_factor
+
+    # 4. 최종적으로 결정된 축과 테이블로 보간법 수행
     return interpolate_2d(voltage, current, voltages_axis, current_axis_to_use, efficiencies_table)
-
 
 def calculate_power_profile(input_df, specs):
     """저장된 레시피와 사양으로 최종 전력 프로파일을 계산하는 함수"""
@@ -289,7 +297,7 @@ else:
 
         # ★★★★★ 축 범위 설정 수정 ★★★★★
         ax.set_title(f'저장된 레시피 비교 및 종합 전력 분석 ({repetition_count}회 반복)', fontsize=18)
-        ax.set_xlabel('총 경과 시간 (H)');
+        ax.set_xlabel('총 경과 시간 (H)')
         ax.set_ylabel('전력 (kW)')
         ax.axhline(0, color='black', linestyle='-', linewidth=0.8)
         ax.grid(True, linestyle='--', alpha=0.5)
