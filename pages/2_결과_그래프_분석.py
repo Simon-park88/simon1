@@ -280,6 +280,7 @@ else:
         fig, ax = plt.subplots(figsize=(16, 8))
         all_recipe_coords = []
         all_time_points = {0.0}
+        individual_peaks = {} # ★★★★★ 개별 피크 저장 공간 ★★★★★
 
         for name in selected_recipe_names:
             saved_data = st.session_state.saved_recipes[name]
@@ -308,6 +309,12 @@ else:
                 time_points.append(current_time)
                 power_values.append(step_power)
                 all_time_points.add(current_time)
+
+            # 개별 레시피의 최대 피크 계산
+            if power_values:
+                individual_peaks[name] = max(power_values)
+            else:
+                individual_peaks[name] = 0
 
             all_recipe_coords.append({'name': name, 'times': time_points, 'powers': power_values})
             ax.plot(time_points, power_values, linestyle='--', alpha=0.4, label=f"{name} ({individual_repetition_count}회 반복)")
@@ -360,6 +367,19 @@ else:
         ax.set_xlim(left=0)  # 오른쪽(right) 제한을 제거하여 자동으로 전체 시간 표시
 
         st.pyplot(fig)
+
+        # --- 최종 결과 요약 (수정) ---
+        st.markdown("---")
+        st.subheader("개별 레시피 피크 정보")
+        
+        num_recipes = len(individual_peaks)
+        cols = st.columns(num_recipes if num_recipes > 0 and num_recipes <= 4 else 4)
+        
+        i = 0
+        for name, peak in individual_peaks.items():
+            with cols[i % 4]:
+                st.metric(label=f"'{name}' 최대 피크", value=f"{peak:.2f} kW")
+            i += 1
 
         # --- 5. 피크 정보 요약 출력 ---
         if power_combined:
