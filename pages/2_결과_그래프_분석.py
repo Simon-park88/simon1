@@ -221,6 +221,29 @@ else:
         options=list(st.session_state.saved_recipes.keys())
     )
 
+    # --- ★★★★★ 개별 반복 횟수 설정 UI ★★★★★ ---
+    repetition_counts = {}
+    if selected_recipe_names:
+        st.sidebar.header("개별 반복 횟수 설정")
+        # session_state에 반복 횟수 저장 공간이 없으면 생성
+        if 'repetition_counts' not in st.session_state:
+            st.session_state.repetition_counts = {}
+
+        # 선택된 각 레시피에 대해 숫자 입력창 생성
+        for name in selected_recipe_names:
+            # 이전에 입력한 값을 기억하도록 session_state 활용
+            default_value = st.session_state.repetition_counts.get(name, 1)
+            repetition_counts[name] = st.sidebar.number_input(
+                f"'{name}' 반복 횟수",
+                min_value=1,
+                step=1,
+                value=default_value,
+                key=f"rep_{name}"  # 각 입력창을 구분하기 위한 고유 키
+            )
+            # 새로 입력된 값을 session_state에 업데이트
+            st.session_state.repetition_counts[name] = repetition_counts[name]
+
+    # --- 그래프 생성 로직 ---
     if selected_recipe_names:
         fig, ax = plt.subplots(figsize=(16, 8))
         all_recipe_coords = []
@@ -228,16 +251,13 @@ else:
 
         for name in selected_recipe_names:
             saved_data = st.session_state.saved_recipes[name]
-            recipe_table = saved_data['recipe_table']
 
-            result_df = calculate_power_profile(recipe_table, saved_data)
-
-            # --- ★★★★★ 반복 로직 적용 ★★★★★ ---
-            # 1회차 프로파일 생성
+            result_df = calculate_power_profile(saved_data['recipe_table'], saved_data)
             single_run_profile = result_df[['실제 테스트 시간(H)', '전력(kW)']].values.tolist()
 
-            # 반복 횟수만큼 프로파일 확장
-            full_run_profile = single_run_profile * repetition_count
+            # ★★★★★ 개별 반복 횟수 적용 ★★★★★
+            individual_repetition_count = repetition_counts.get(name, 1)
+            full_run_profile = single_run_profile * individual_repetition_count
 
             # 확장된 프로파일로 그래프 좌표 생성
             time_points, power_values = [0.0], []
