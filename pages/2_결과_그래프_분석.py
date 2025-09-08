@@ -122,6 +122,7 @@ def calculate_power_profile(input_df, specs):
     standby_power = specs['standby_power']
     test_channels = specs['test_channels']
     required_equipment = math.ceil(test_channels / control_channels) if control_channels > 0 else 0
+    max_capacity_ah = cell_capacity
 
     # SoC 트래킹을 위한 변수 초기화
     current_charge_ah = 0.0
@@ -146,6 +147,11 @@ def calculate_power_profile(input_df, specs):
             calculated_df.at[index, '전력량(kWh)'] = kwh
             calculated_df.at[index, 'C-rate'] = 0.0
             calculated_df.at[index, '효율(%)'] = 0.0
+
+            # Rest 중에는 충전량이 변하지 않으므로, 이전 값을 그대로 유지하여 표시
+            calculated_df.at[index, '누적 충전량(Ah)'] = current_charge_ah
+            soc_percent = (current_charge_ah / max_capacity_ah) * 100 if max_capacity_ah > 0 else 0
+            calculated_df.at[index, 'SoC(%)'] = soc_percent
 
         # 2. Charge 또는 Discharge 모드이면서, 전압/전류 값이 모두 있을 때만 계산
         elif mode in ['Charge', 'Discharge'] and pd.notna(row['전압(V)']) and pd.notna(row['전류(A)']):
