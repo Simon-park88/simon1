@@ -240,13 +240,8 @@ st.title("📊 저장된 레시피 비교 분석")
 if 'saved_recipes' not in st.session_state or not st.session_state.saved_recipes:
     st.warning("분석할 저장된 레시피가 없습니다. '레시피 계산기' 페이지에서 먼저 레시피를 저장해주세요.")
 else:
-    # --- ★★★★★ 반복 옵션 UI 추가 ★★★★★ ---
+    # --- 레시피 선택 UI ---
     st.sidebar.header("그래프 옵션")
-    run_repetition = st.sidebar.toggle('반복 테스트', help="선택된 레시피들을 아래 횟수만큼 반복하여 전체 그래프를 그립니다.")
-    repetition_count = 1
-    if run_repetition:
-        repetition_count = st.sidebar.number_input('반복 횟수', min_value=1, step=1, value=3)
-
     selected_recipe_names = st.multiselect(
         "그래프로 비교할 레시피를 선택하세요",
         options=list(st.session_state.saved_recipes.keys())
@@ -309,7 +304,7 @@ else:
                 all_time_points.add(current_time)
 
             all_recipe_coords.append({'name': name, 'times': time_points, 'powers': power_values})
-            ax.plot(time_points, power_values, linestyle='--', alpha=0.4, label=f"{name} ({repetition_count}회 반복)")
+            ax.plot(time_points, power_values, linestyle='--', alpha=0.4, label=f"{name} ({individual_repetition_count}회 반복)")
 
         # 종합 전력 계산
         unified_timeline = sorted(list(all_time_points))
@@ -350,7 +345,7 @@ else:
                             arrowprops=dict(facecolor='red', shrink=0.05, width=2))
 
         # ★★★★★ 축 범위 설정 수정 ★★★★★
-        ax.set_title(f'저장된 레시피 비교 및 종합 전력 분석 ({repetition_count}회 반복)', fontsize=18)
+        ax.set_title(f'저장된 레시피 비교 및 종합 전력 분석', fontsize=18)
         ax.set_xlabel('총 경과 시간 (H)')
         ax.set_ylabel('전력 (kW)')
         ax.axhline(0, color='black', linestyle='-', linewidth=0.8)

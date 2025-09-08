@@ -166,7 +166,9 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     # ▼▼▼▼▼ 이 부분을 수정하세요 ▼▼▼▼▼
-    st.selectbox("장비 사양", options=[
+    st.selectbox("장비 사양",
+                 help = "테스트 전류에 맞는 사양을 선택해 주세요. 사양에 맞지 않는 전류 계산 시, 효율 계산이 정확하지 않을 수 있습니다."
+, options=[
         '60A - 300A',
         '120A - 600A',
         '180A - 900A',
@@ -175,7 +177,6 @@ with col1:
         '360A - 1800A',
         '420A - 2000A'
     ], key='equipment_spec')
-    help = "테스트 전류에 맞는 사양을 선택해 주세요. 사양에 맞지 않는 전류 계산 시, 효율 계산이 정확하지 않을 수 있습니다."
 
     st.number_input("대기전력 (W)", min_value=0.0, step=1.0, key='standby_power', format="%.2f")
     st.number_input("Drop전압 (V)", min_value=0.0, max_value=0.99, step=0.01, format="%.2f", key='drop_voltage')
