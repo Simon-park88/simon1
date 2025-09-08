@@ -161,12 +161,47 @@ def calculate_power_profile(input_df, specs):
             efficiency = get_efficiency(mode, voltage, current, equipment_spec)
             calculated_df.at[index, '효율(%)'] = efficiency * 100.0
 
-            # 실제 테스트 시간 계산
+            # 3. ★★★★★ SoC를 고려한 실제 테스트 시간 계산 ★★★★★
             actual_time = 0.0
-            if current > 0 and cell_capacity > 0:
-                c_rate_time = cell_capacity / current
-                actual_time = min(c_rate_time, time_limit) if time_limit and time_limit > 0 else c_rate_time
+            if current > 0:
+                # C-rate 기준 시간 (이론상 최대 시간)
+                c_rate_time = max_capacity_ah / current
+
+                if mode == 'Charge':
+                    # 충전 가능 용량(Ah) = 최대 용량 - 현재 충전량
+                    chargeable_ah = max_capacity_ah - current_charge_ah
+                    # 충전 가능 시간 = 충전 가능 용량 / 전류
+                    soc_time_limit = chargeable_ah / current if current > 0 else float('inf')
+
+                elif mode == 'Discharge':
+                    # 방전 가능 용량(Ah) = 현재 충전량
+                    dischargeable_ah = current_charge_ah
+                    # 방전 가능 시간 = 방전 가능 용량 / 전류
+                    soc_time_limit = dischargeable_ah / current if current > 0 else float('inf')
+
+                # 1. SoC 기준 시간, 2. C-rate 기준 시간, 3. 사용자 시간 제한 중 가장 짧은 시간 선택
+                possible_times = [soc_time_limit, c_rate_time]
+                if time_limit is not None and time_limit > 0:
+                    possible_times.append(time_limit)
+
+                actual_time = min(possible_times)
+
             calculated_df.at[index, '실제 테스트 시간(H)'] = actual_time
+
+            # ★★★★★ 현재 충전량 및 SoC 업데이트 ★★★★★
+            charge_change = actual_time * current
+            if mode == 'Charge':
+                current_charge_ah += charge_change
+            elif mode == 'Discharge':
+                current_charge_ah -= charge_change
+
+            # 충전량이 0 미만 또는 최대 용량을 초과하지 않도록 보정
+            current_charge_ah = np.clip(current_charge_ah, 0, max_capacity_ah)
+
+            # 계산된 누적 충전량과 SoC(%)를 해당 행에 저장
+            calculated_df.at[index, '누적 충전량(Ah)'] = current_charge_ah
+            soc_percent = (current_charge_ah / max_capacity_ah) * 100 if max_capacity_ah > 0 else 0
+            calculated_df.at[index, 'SoC(%)'] = soc_percent
 
             # 전력(kW) 계산
             total_power_kw = 0.0
