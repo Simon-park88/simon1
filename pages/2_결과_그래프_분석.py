@@ -105,12 +105,12 @@ def get_efficiency(mode, voltage, current, equipment_spec):
     # 4. 최종적으로 결정된 축과 테이블로 보간법 수행
     return interpolate_2d(voltage, current, voltages_axis, current_axis_to_use, efficiencies_table)
 
+
 def calculate_power_profile(input_df, specs):
     """저장된 레시피와 사양으로 최종 전력 프로파일을 계산하는 함수"""
     calculated_df = input_df.copy()
 
-    # 계산 열 추가
-    calculated_columns = ["C-rate", "실제 테스트 시간(H)", "효율(%)", "전력(kW)", "전력량(kWh)"]
+    calculated_columns = ["C-rate", "실제 테스트 시간(H)", "효율(%)", "전력(kW)", "전력량(kWh)", "누적 충전량(Ah)", "SoC(%)"]
     for col in calculated_columns:
         calculated_df[col] = 0.0
 
@@ -123,6 +123,8 @@ def calculate_power_profile(input_df, specs):
     test_channels = specs['test_channels']
     required_equipment = math.ceil(test_channels / control_channels) if control_channels > 0 else 0
 
+    # SoC 트래킹을 위한 변수 초기화
+    current_charge_ah = 0.0
     # 각 행(스텝)을 순회하며 모든 값 재계산
     for index, row in calculated_df.iterrows():
         total_power_w = 0.0
@@ -161,25 +163,20 @@ def calculate_power_profile(input_df, specs):
             efficiency = get_efficiency(mode, voltage, current, equipment_spec)
             calculated_df.at[index, '효율(%)'] = efficiency * 100.0
 
-            # 3. ★★★★★ SoC를 고려한 실제 테스트 시간 계산 ★★★★★
+            # SoC를 고려한 실제 테스트 시간 계산
             actual_time = 0.0
             if current > 0:
-                # C-rate 기준 시간 (이론상 최대 시간)
-                c_rate_time = max_capacity_ah / current
+                # ★★★★★ 변수 이름 수정 ★★★★★
+                c_rate_time = cell_capacity / current
 
                 if mode == 'Charge':
-                    # 충전 가능 용량(Ah) = 최대 용량 - 현재 충전량
-                    chargeable_ah = max_capacity_ah - current_charge_ah
-                    # 충전 가능 시간 = 충전 가능 용량 / 전류
+                    chargeable_ah = cell_capacity - current_charge_ah
                     soc_time_limit = chargeable_ah / current if current > 0 else float('inf')
 
                 elif mode == 'Discharge':
-                    # 방전 가능 용량(Ah) = 현재 충전량
                     dischargeable_ah = current_charge_ah
-                    # 방전 가능 시간 = 방전 가능 용량 / 전류
                     soc_time_limit = dischargeable_ah / current if current > 0 else float('inf')
 
-                # 1. SoC 기준 시간, 2. C-rate 기준 시간, 3. 사용자 시간 제한 중 가장 짧은 시간 선택
                 possible_times = [soc_time_limit, c_rate_time]
                 if time_limit is not None and time_limit > 0:
                     possible_times.append(time_limit)
@@ -188,19 +185,18 @@ def calculate_power_profile(input_df, specs):
 
             calculated_df.at[index, '실제 테스트 시간(H)'] = actual_time
 
-            # ★★★★★ 현재 충전량 및 SoC 업데이트 ★★★★★
+            # 현재 충전량 업데이트
             charge_change = actual_time * current
             if mode == 'Charge':
                 current_charge_ah += charge_change
             elif mode == 'Discharge':
                 current_charge_ah -= charge_change
 
-            # 충전량이 0 미만 또는 최대 용량을 초과하지 않도록 보정
-            current_charge_ah = np.clip(current_charge_ah, 0, max_capacity_ah)
+            # ★★★★★ 변수 이름 수정 ★★★★★
+            current_charge_ah = np.clip(current_charge_ah, 0, cell_capacity)
 
-            # 계산된 누적 충전량과 SoC(%)를 해당 행에 저장
             calculated_df.at[index, '누적 충전량(Ah)'] = current_charge_ah
-            soc_percent = (current_charge_ah / max_capacity_ah) * 100 if max_capacity_ah > 0 else 0
+            soc_percent = (current_charge_ah / cell_capacity) * 100 if cell_capacity > 0 else 0
             calculated_df.at[index, 'SoC(%)'] = soc_percent
 
             # 전력(kW) 계산
