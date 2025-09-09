@@ -137,7 +137,9 @@ if 'standby_power' not in st.session_state:
 if 'drop_voltage' not in st.session_state:
     st.session_state.drop_voltage = 0.50
 if 'input_df' not in st.session_state:
-    st.session_state.input_df = pd.DataFrame(columns=["모드", "전압(V)", "전류(A)", "시간 제한(H)"])
+    # 5개 열 구조로 변경
+    st.session_state.input_df = pd.DataFrame(columns=[
+        "모드", "테스트", "전압(V)", "전류(A)", "전력(W)", "시간 제한(H)"])
 if 'result_df' not in st.session_state:
     # 결과 데이터프레임에 '누적 충전량'과 'SoC' 열 추가
     st.session_state.result_df = pd.DataFrame(columns=[
@@ -196,79 +198,131 @@ st.metric(label="✅ 필요 장비 수량 (자동 계산)", value=f"{required_eq
 st.markdown("---")
 
 # --- 4. 레시피 테이블 UI ---
-st.subheader("레시피 구성 테이블")
-
-# 엑셀 파일 업로드 UI 추가
 uploaded_file = st.file_uploader(
-    "엑셀 파일로 레시피를 업로드하세요 (A열: 모드, B열: 전압, C열: 전류, D열: 시간 제한)",
-    type=['xlsx', 'xls']  # 엑셀 파일 형식만 허용
+    "엑셀 파일로 레시피를 업로드하세요 (A:모드, B:테스트, C:전압, D:전류, E:전력, F:시간)",
+    type=['xlsx', 'xls'],
+    help="""
+    - **모드**: `Charge`, `Discharge`, `Rest` 중 선택
+    - **테스트**: `CC` 또는 `CP` 중 선택 (`Rest`는 비워둠)
+    - **CC 테스트**: `전압(V)`과 `전류(A)` 값을 입력
+    - **CP 테스트**: `전압(V)`과 `전력(W)` 값을 입력
+    """    
 )
 
 # 파일이 업로드되었을 때 실행되는 로직
 if uploaded_file is not None:
     try:
-        # 엑셀 파일을 데이터프레임으로 읽어옴 (헤더 없음)
-        df_from_excel = pd.read_excel(uploaded_file, header=None)
+        df_from_excel = pd.read_excel(uploaded_file, header=None, names=["모드", "테스트", "전압(V)", "전류(A)", "전력(W)", "시간 제한(H)"])
+        
+        
+        # --- ★★★★★ 유효성 검사 로직 추가 ★★★★★ ---
+        errors = []
+        for index, row in df_from_excel.iterrows():
+            step_num = index + 1
+            mode = row['모드']
+            test_type = row['테스트']
+            
+            if mode in ['Charge', 'Discharge']:
+                if test_type == 'CC' and pd.isna(row['전류(A)']):
+                    errors.append(f"{step_num}번 스텝: CC 모드는 '전류(A)' 값이 필요합니다.")
+                elif test_type == 'CC' and pd.notna(row['전력(W)']):
+                    errors.append(f"{step_num}번 스텝: CC 모드는 '전력(W)' 값을 비워두어야 합니다.")
+                
+                elif test_type == 'CP' and pd.isna(row['전력(W)']):
+                    errors.append(f"{step_num}번 스텝: CP 모드는 '전력(W)' 값이 필요합니다.")
+                elif test_type == 'CP' and pd.notna(row['전류(A)']):
+                    errors.append(f"{step_num}번 스텝: CP 모드는 '전류(A)' 값을 비워두어야 합니다.")
+                
+                if pd.isna(row['전압(V)']):
+                     errors.append(f"{step_num}번 스텝: Charge/Discharge 모드는 '전압(V)' 값이 필요합니다.")
 
-        # 읽어온 데이터프레임의 열 이름을 우리 앱의 형식에 맞게 변경
-        df_from_excel.columns = ["모드", "전압(V)", "전류(A)", "시간 제한(H)"]
-
-        # 현재 레시피 테이블을 업로드된 내용으로 덮어쓰기
-        st.session_state.input_df = df_from_excel
-        st.success("엑셀 파일의 내용으로 레시피를 성공적으로 불러왔습니다!")
-
+        # 검사 결과에 따라 처리
+        if errors:
+            # 오류가 하나라도 있으면 메시지를 모아서 보여줌
+            st.error("엑셀 파일 데이터에 오류가 있습니다:\n- " + "\n- ".join(errors))
+        else:
+            # 오류가 없으면 성공적으로 로드
+            st.session_state.input_df = df_from_excel
+            st.success("엑셀 파일의 내용으로 레시피를 성공적으로 불러왔습니다!")
+        # ★★★★★ 여기까지 추가 ★★★★★
+        
     except Exception as e:
         st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
 
 if st.button("➕ 스텝 추가"):
-    new_step = pd.DataFrame([{"모드": "Rest", "전압(V)": None, "전류(A)": None, "시간 제한(H)": 1.0}])
+    new_step = pd.DataFrame([{
+        "모드": "Rest", "테스트": "-", "전압(V)": None, 
+        "전류(A)": None, "전력(W)": None, "시간 제한(H)": 1.0
+    }])
     st.session_state.input_df = pd.concat([st.session_state.input_df, new_step], ignore_index=True)
+    # 버튼 클릭 시 즉시 새로고침하여 None 값 정리 로직을 타도록 함
+    st.rerun()
 
-# data_editor는 이제 'input_df'를 사용
+# ★★★★★ data_editor를 호출하기 직전에 None 값을 먼저 정리합니다 ★★★★★
+# '모드' 열에 있을 수 있는 모든 None 값을 'Rest'로 통일
+if '모드' in st.session_state.input_df.columns:
+    st.session_state.input_df['모드'] = st.session_state.input_df['모드'].fillna('Rest')
+# '테스트' 열에 있을 수 있는 모든 None 값을 '-'로 통일
+if '테스트' in st.session_state.input_df.columns:
+    st.session_state.input_df['테스트'] = st.session_state.input_df['테스트'].fillna('-')
+
+# 이제 data_editor는 항상 깨끗한 데이터프레임을 받게 됩니다.
 edited_df = st.data_editor(
     st.session_state.input_df,
     column_config={
-        "모드": st.column_config.SelectboxColumn("모드 선택", options=["Charge", "Discharge", "Rest"], required=True),
+        "모드": st.column_config.SelectboxColumn("모드", options=["Charge", "Discharge", "Rest"], required=True),
+        "테스트": st.column_config.SelectboxColumn("테스트 방식", options=["CC", "CP", "-"], required=True),
         "전압(V)": st.column_config.NumberColumn("전압 (V)", format="%.2f"),
         "전류(A)": st.column_config.NumberColumn("전류 (A)", format="%.2f"),
+        "전력(W)": st.column_config.NumberColumn("전력 (W)", format="%.2f"),
         "시간 제한(H)": st.column_config.NumberColumn("시간 제한 (H)", format="%.2f"),
     },
     hide_index=True,
     num_rows="dynamic",
 )
-# 사용자가 편집한 내용을 다시 input_df에 저장
 st.session_state.input_df = edited_df
 
+# try-except 블록으로 전체 계산 로직을 감싸서 오류 처리
+try:
+    # 계산은 input_df를 복사하여 진행
+    validated_df = st.session_state.input_df.copy()
 
-# --- 5. 자동 계산 로직 ---
+    # 조건부 비활성화 로직
+    for index, row in validated_df.iterrows():
+        mode = row['모드']
+        test_type = row['테스트']
 
-# UI를 깔끔하게 배치하기 위해 컬럼 사용
-col1, col2, col3 = st.columns([0.4, 0.2, 0.4])
+        if mode == 'Rest':
+            validated_df.at[index, '테스트'] = "-"
+            validated_df.at[index, '전압(V)'] = None
+            validated_df.at[index, '전류(A)'] = None
+            validated_df.at[index, '전력(W)'] = None
+        
+        elif test_type == 'CC':
+            validated_df.at[index, '전력(W)'] = None
 
-with col1:
-    # '반복 테스트' 토글 스위치 추가
-    run_repetition = st.toggle('반복 테스트', help="이 옵션을 켜면 아래 횟수만큼 레시피 전체를 반복하여 계산합니다.")
+        elif test_type == 'CP':
+            validated_df.at[index, '전류(A)'] = None
+    
+    # 유효성 검사가 끝난 데이터프레임을 다시 session_state에 저장
+    st.session_state.input_df = validated_df
 
-with col2:
-    # 토글이 켜졌을 때만 횟수 입력창 표시
-    if run_repetition:
-        repetition_count = st.number_input('반복 횟수', min_value=1, step=1, value=1, label_visibility="collapsed")
+except Exception as e:
+    st.error(f"입력값 처리 중 오류가 발생했습니다: {e}")
 
 # 계산 실행 버튼
 if st.button("⚙️ 레시피 계산 실행"):
     try:
-        # 1. 반복 여부 확인 및 원본 데이터 준비
+        # ★★★★★ 반복 로직 제거 ★★★★★
+        # 이제 계산은 항상 현재 입력된 레시피(1회차)를 기준으로 수행
         input_df_for_calc = st.session_state.input_df.copy()
-        if run_repetition and repetition_count > 1:
-            st.info(f"{repetition_count}회 반복하여 계산합니다.")
-            # 데이터프레임을 지정된 횟수만큼 복제하여 합침
-            input_df_for_calc = pd.concat([st.session_state.input_df] * repetition_count, ignore_index=True)
-
-        # 2. 계산을 위한 준비 (이전과 동일)
+        
+        # 2. 계산을 위한 준비
         calculated_df = input_df_for_calc
-        calculated_columns = ["C-rate", "실제 테스트 시간(H)", "효율(%)", "전력(kW)", "전력량(kWh)"]
+        calculated_columns = ["C-rate", "실제 테스트 시간(H)", "효율(%)", "전력(kW)", "전력량(kWh)", "누적 충전량(Ah)", "SoC(%)"]
         for col in calculated_columns:
             calculated_df[col] = 0.0
+        
         # ★★★★★ SoC 트래킹을 위한 변수 초기화 ★★★★★
         # 현재 충전된 용량 (Ah), 0%에서 시작한다고 가정
         current_charge_ah = 0.0
@@ -287,6 +341,7 @@ if st.button("⚙️ 레시피 계산 실행"):
         # 각 행을 순회하며 모든 값 재계산
         for index, row in calculated_df.iterrows():
             mode = row['모드']
+            test_type = row['테스트']
 
             # 1. Rest 모드를 먼저 처리
             if mode == 'Rest':
@@ -314,62 +369,58 @@ if st.button("⚙️ 레시피 계산 실행"):
                 calculated_df.at[index, 'SoC(%)'] = soc_percent
 
             # 2. Charge 또는 Discharge 모드이면서, 전압/전류 값이 모두 있을 때만 계산
-            elif mode in ['Charge', 'Discharge'] and pd.notna(row['전압(V)']) and pd.notna(row['전류(A)']):
+            elif mode in ['Charge', 'Discharge']:
                 voltage = row['전압(V)']
-                current = abs(row['전류(A)'])
-                time_limit = row['시간 제한(H)']
+                current = 0.0 # 전류값을 계산하기 위해 초기화
+                
+                # --- 테스트 방식에 따라 전류(current) 값을 결정 ---
+                if test_type == 'CC' and pd.notna(row['전류(A)']):
+                    current = abs(row['전류(A)'])
+                
+                elif test_type == 'CP' and pd.notna(row['전력(W)']) and pd.notna(voltage) and voltage > 0:
+                    power_w = row['전력(W)']
+                    current = abs(power_w / voltage)
 
-                # 1. C-rate 계산
-                c_rate = 0.0
-                if cell_capacity > 0 and mode != 'Rest':
-                    c_rate = current / cell_capacity
-                calculated_df.at[index, 'C-rate'] = c_rate
+                # --- 전류가 결정된 후, 공통 계산 로직 실행 ---
+                # (전압 입력이 없거나, 전류가 0이면 계산을 건너뜀)
+                if pd.notna(voltage) and current > 0:
+                    time_limit = row['시간 제한(H)']
 
-                # 2. 효율 계산
-                efficiency = get_efficiency(mode, voltage, current, equipment_spec)
-                calculated_df.at[index, '효율(%)'] = efficiency * 100.0
-
-                # 3. ★★★★★ SoC를 고려한 실제 테스트 시간 계산 ★★★★★
-                actual_time = 0.0
-                if current > 0:
-                    # C-rate 기준 시간 (이론상 최대 시간)
-                    c_rate_time = max_capacity_ah / current
-
+                    # C-rate 계산
+                    c_rate = current / cell_capacity if cell_capacity > 0 else 0
+                    calculated_df.at[index, 'C-rate'] = c_rate
+                    
+                    # 효율 계산
+                    efficiency = get_efficiency(mode, voltage, current, equipment_spec)
+                    calculated_df.at[index, '효율(%)'] = efficiency * 100.0
+                    
+                    # SoC를 고려한 실제 테스트 시간 계산
+                    actual_time = 0.0
+                    c_rate_time = cell_capacity / current
                     if mode == 'Charge':
-                        # 충전 가능 용량(Ah) = 최대 용량 - 현재 충전량
                         chargeable_ah = max_capacity_ah - current_charge_ah
-                        # 충전 가능 시간 = 충전 가능 용량 / 전류
-                        soc_time_limit = chargeable_ah / current if current > 0 else float('inf')
-
-                    elif mode == 'Discharge':
-                        # 방전 가능 용량(Ah) = 현재 충전량
+                        soc_time_limit = chargeable_ah / current
+                    else: # Discharge
                         dischargeable_ah = current_charge_ah
-                        # 방전 가능 시간 = 방전 가능 용량 / 전류
-                        soc_time_limit = dischargeable_ah / current if current > 0 else float('inf')
-
-                    # 1. SoC 기준 시간, 2. C-rate 기준 시간, 3. 사용자 시간 제한 중 가장 짧은 시간 선택
+                        soc_time_limit = dischargeable_ah / current
+                    
                     possible_times = [soc_time_limit, c_rate_time]
                     if time_limit is not None and time_limit > 0:
                         possible_times.append(time_limit)
-
                     actual_time = min(possible_times)
-
-                calculated_df.at[index, '실제 테스트 시간(H)'] = actual_time
-
-                # ★★★★★ 현재 충전량 및 SoC 업데이트 ★★★★★
-                charge_change = actual_time * current
-                if mode == 'Charge':
-                    current_charge_ah += charge_change
-                elif mode == 'Discharge':
-                    current_charge_ah -= charge_change
-
-                # 충전량이 0 미만 또는 최대 용량을 초과하지 않도록 보정
-                current_charge_ah = np.clip(current_charge_ah, 0, max_capacity_ah)
-
-                # 계산된 누적 충전량과 SoC(%)를 해당 행에 저장
-                calculated_df.at[index, '누적 충전량(Ah)'] = current_charge_ah
-                soc_percent = (current_charge_ah / max_capacity_ah) * 100 if max_capacity_ah > 0 else 0
-                calculated_df.at[index, 'SoC(%)'] = soc_percent
+                    calculated_df.at[index, '실제 테스트 시간(H)'] = actual_time
+                    
+                    # 현재 충전량 업데이트
+                    charge_change = actual_time * current
+                    if mode == 'Charge':
+                        current_charge_ah += charge_change
+                    elif mode == 'Discharge':
+                        current_charge_ah -= charge_change
+                    current_charge_ah = np.clip(current_charge_ah, 0, max_capacity_ah)
+                    
+                    calculated_df.at[index, '누적 충전량(Ah)'] = current_charge_ah
+                    soc_percent = (current_charge_ah / max_capacity_ah) * 100 if max_capacity_ah > 0 else 0
+                    calculated_df.at[index, 'SoC(%)'] = soc_percent
 
                 # 4. 전력(kW) 계산
                 total_power_kw = 0.0

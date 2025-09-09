@@ -128,15 +128,17 @@ def calculate_power_profile(input_df, specs):
     current_charge_ah = 0.0
     # 각 행(스텝)을 순회하며 모든 값 재계산
     for index, row in calculated_df.iterrows():
-        total_power_w = 0.0
         mode = row['모드']
+        test_type = row['테스트']
 
         # 1. Rest 모드를 먼저 처리
         if mode == 'Rest':
             time_limit = row['시간 제한(H)']
 
+            # Rest는 사용자가 입력한 시간 제한을 그대로 실제 시간으로 사용
             actual_time = time_limit if pd.notna(time_limit) else 0.0
 
+            # Rest 시의 전력은 대기전력만 계산
             total_power_w = standby_power * required_equipment
             total_power_kw = total_power_w / 1000.0
             kwh = total_power_kw * actual_time
@@ -145,6 +147,7 @@ def calculate_power_profile(input_df, specs):
             calculated_df.at[index, '실제 테스트 시간(H)'] = actual_time
             calculated_df.at[index, '전력(kW)'] = total_power_kw
             calculated_df.at[index, '전력량(kWh)'] = kwh
+            # Rest 모드이므로 나머지 계산값은 0으로 설정
             calculated_df.at[index, 'C-rate'] = 0.0
             calculated_df.at[index, '효율(%)'] = 0.0
 
@@ -153,57 +156,59 @@ def calculate_power_profile(input_df, specs):
             soc_percent = (current_charge_ah / max_capacity_ah) * 100 if max_capacity_ah > 0 else 0
             calculated_df.at[index, 'SoC(%)'] = soc_percent
 
-        # 2. Charge 또는 Discharge 모드이면서, 전압/전류 값이 모두 있을 때만 계산
-        elif mode in ['Charge', 'Discharge'] and pd.notna(row['전압(V)']) and pd.notna(row['전류(A)']):
+            # 2. Charge 또는 Discharge 모드이면서, 전압/전류 값이 모두 있을 때만 계산
+        elif mode in ['Charge', 'Discharge']:
             voltage = row['전압(V)']
-            current = abs(row['전류(A)'])
-            time_limit = row['시간 제한(H)']
+            current = 0.0 # 전류값을 계산하기 위해 초기화
+                
+            # --- 테스트 방식에 따라 전류(current) 값을 결정 ---
+            if test_type == 'CC' and pd.notna(row['전류(A)']):
+                current = abs(row['전류(A)'])
+                
+            elif test_type == 'CP' and pd.notna(row['전력(W)']) and pd.notna(voltage) and voltage > 0:
+                power_w = row['전력(W)']
+                current = abs(power_w / voltage)
 
-            # C-rate 계산
-            c_rate = 0.0
-            if cell_capacity > 0:
-                c_rate = current / cell_capacity
-            calculated_df.at[index, 'C-rate'] = c_rate
+            # --- 전류가 결정된 후, 공통 계산 로직 실행 ---
+            # (전압 입력이 없거나, 전류가 0이면 계산을 건너뜀)
+            if pd.notna(voltage) and current > 0:
+                time_limit = row['시간 제한(H)']
 
-            # 효율 계산
-            efficiency = get_efficiency(mode, voltage, current, equipment_spec)
-            calculated_df.at[index, '효율(%)'] = efficiency * 100.0
-
-            # SoC를 고려한 실제 테스트 시간 계산
-            actual_time = 0.0
-            if current > 0:
-                # ★★★★★ 변수 이름 수정 ★★★★★
+                # C-rate 계산
+                c_rate = current / cell_capacity if cell_capacity > 0 else 0
+                calculated_df.at[index, 'C-rate'] = c_rate
+                    
+                # 효율 계산
+                efficiency = get_efficiency(mode, voltage, current, equipment_spec)
+                calculated_df.at[index, '효율(%)'] = efficiency * 100.0
+                    
+                # SoC를 고려한 실제 테스트 시간 계산
+                actual_time = 0.0
                 c_rate_time = cell_capacity / current
-
                 if mode == 'Charge':
-                    chargeable_ah = cell_capacity - current_charge_ah
-                    soc_time_limit = chargeable_ah / current if current > 0 else float('inf')
-
-                elif mode == 'Discharge':
+                    chargeable_ah = max_capacity_ah - current_charge_ah
+                    soc_time_limit = chargeable_ah / current
+                else: # Discharge
                     dischargeable_ah = current_charge_ah
-                    soc_time_limit = dischargeable_ah / current if current > 0 else float('inf')
-
+                    soc_time_limit = dischargeable_ah / current
+                    
                 possible_times = [soc_time_limit, c_rate_time]
                 if time_limit is not None and time_limit > 0:
                     possible_times.append(time_limit)
-
                 actual_time = min(possible_times)
-
-            calculated_df.at[index, '실제 테스트 시간(H)'] = actual_time
-
-            # 현재 충전량 업데이트
-            charge_change = actual_time * current
-            if mode == 'Charge':
-                current_charge_ah += charge_change
-            elif mode == 'Discharge':
-                current_charge_ah -= charge_change
-
-            # ★★★★★ 변수 이름 수정 ★★★★★
-            current_charge_ah = np.clip(current_charge_ah, 0, cell_capacity)
-
-            calculated_df.at[index, '누적 충전량(Ah)'] = current_charge_ah
-            soc_percent = (current_charge_ah / cell_capacity) * 100 if cell_capacity > 0 else 0
-            calculated_df.at[index, 'SoC(%)'] = soc_percent
+                calculated_df.at[index, '실제 테스트 시간(H)'] = actual_time
+                    
+                # 현재 충전량 업데이트
+                charge_change = actual_time * current
+                if mode == 'Charge':
+                    current_charge_ah += charge_change
+                elif mode == 'Discharge':
+                    current_charge_ah -= charge_change
+                current_charge_ah = np.clip(current_charge_ah, 0, max_capacity_ah)
+                    
+                calculated_df.at[index, '누적 충전량(Ah)'] = current_charge_ah
+                soc_percent = (current_charge_ah / max_capacity_ah) * 100 if max_capacity_ah > 0 else 0
+                calculated_df.at[index, 'SoC(%)'] = soc_percent
 
             # 전력(kW) 계산
             total_power_kw = 0.0
