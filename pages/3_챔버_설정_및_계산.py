@@ -3,7 +3,7 @@ import math
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("🔌 주변설비 설정 및 계산")
+st.title("🔌 챔버 설정 및 계산")
 st.info("이 페이지에서 입력한 값은 '레시피 계산기'의 전체 전력량 계산에 반영됩니다.")
 
 # --- 콜백 함수 정의 ---
@@ -72,8 +72,17 @@ st.markdown("---")
 
 # --- 3. 내부 부하 설정 ---
 st.subheader("3. 내부 부하 설정")
-# ★★★★★ '내부 구조물 무게' 수동 입력창 삭제 ★★★★★
-st.number_input("팬/모터 부하 (kW)", key='fan_motor_load', help="챔버 크기를 변경하면 자동으로 추천값이 업데이트됩니다.", format="%.2f")
+
+# 팬/모터 '정격' 부하 입력
+st.number_input("팬/모터 정격 부하 (kW)", key='fan_motor_load', help="온도 변화 시 사용되는 최대 부하입니다.", format="%.2f")
+
+# ★★★★★ 온도 유지 시 부하율 슬라이더 추가 ★★★★★
+st.slider(
+    "온도 유지 시 팬/모터 부하율 (%)", 
+    min_value=0, max_value=100, value=30, # 기본값 30%
+    key='fan_soak_factor',
+    help="온도 유지 상태일 때 팬/모터가 정격 부하의 몇 %로 작동할지 설정합니다."
+)
 
 if st.session_state.load_type == '각형 배터리':
     col_batt1, col_batt2 = st.columns(2)
@@ -152,53 +161,65 @@ if load_type == '각형 배터리':
     heat_per_cell_w = 50.0
     internal_product_load_w = num_cells * heat_per_cell_w
 
-# 5. 총 열부하 계산
-total_heat_load_w = conduction_load_w + ramp_load_w + internal_product_load_w + fan_motor_load_w
+# ★★★★★ 두 가지 시나리오의 총 열부하 계산 ★★★★★
+# 시나리오 1: 온도 변화 시 (모든 부하 합산)
+total_heat_load_ramp = conduction_load_w + ramp_load_w + internal_product_load_w + fan_motor_load_w
+# 시나리오 2: 온도 유지 시 (온도 변화 부하 제외)
+total_heat_load_soak = conduction_load_w + internal_product_load_w + fan_motor_load_w
 
-# ★★★★★ 6. 최소 필요 마력(HP) 계산 (로직 수정) ★★★★★
-# (1) 현재 목표 온도에 맞는 COP 값을 테이블에서 보간법으로 추정
-#     np.interp(목표값, x축 데이터, y축 데이터)
+# --- 각 시나리오별 최종 전력 예측 ---
+# COP 계산 (두 시나리오 공통)
 cop = np.interp(target_temp, cop_temps, cop_values)
 
-# (2) COP를 이용해 실제 필요한 '전기 에너지' 계산
-#     필요 전기(W) = 제거할 열(W) / COP
-required_electrical_power_w = total_heat_load_w / cop if cop > 0 else float('inf')
+# 시나리오 1: 온도 변화 시 최종 계산
+required_electrical_power_ramp = total_heat_load_ramp / cop if cop > 0 else float('inf')
+required_hp_ramp = (required_electrical_power_ramp * 1.3) / 746
+load_factor_ramp = required_hp_ramp / st.session_state.actual_hp if st.session_state.actual_hp > 0 else 0
+estimated_power_ramp = st.session_state.actual_rated_power * load_factor_ramp
 
-# (3) 필요한 전기 에너지를 마력(HP)으로 변환 (1 HP ≈ 746 W)
-#     여기에 안전율 1.3을 적용
-required_hp = (required_electrical_power_w * 1.3) / 746
+# 시나리오 2: 온도 유지 시 최종 계산
+required_electrical_power_soak = total_heat_load_soak / cop if cop > 0 else float('inf')
+required_hp_soak = (required_electrical_power_soak * 1.3) / 746
+load_factor_soak = required_hp_soak / st.session_state.actual_hp if st.session_state.actual_hp > 0 else 0
+estimated_power_soak = st.session_state.actual_rated_power * load_factor_soak
 
-# ★★★★★ 부하율 및 실제 소비 전력 계산 추가 ★★★★★
-actual_hp = st.session_state.actual_hp
-actual_rated_power = st.session_state.actual_rated_power
-
-# (1) 부하율 계산
-load_factor = required_hp / actual_hp if actual_hp > 0 else 0
-
-# (2) 예상 실제 소비 전력 계산
-estimated_actual_power_kw = actual_rated_power * load_factor
-
-# --- 결과 표시 ---
-col_res1, col_res2, col_res3 = st.columns(3)
-with col_res1:
-    st.metric("총 열부하 (Total Heat Load)", f"{total_heat_load_w:.2f} W")
-with col_res2:
-    st.metric("예상 성능 계수 (COP)", f"{cop:.2f}")
-with col_res3:
-    st.metric("최소 필요 마력 (HP)", f"{required_hp:.2f} HP")
-
+# 결과 표시
 st.markdown("---")
 st.subheader("✔️ 최종 소비 전력 예측")
 
-# 새로운 결과 표시
-col_final1, col_final2 = st.columns(2)
-with col_final1:
-    st.metric("예상 부하율", f"{load_factor:.1%}") # % 형태로 표시
-with col_final2:
-    st.metric("예상 실제 소비 전력", f"{estimated_actual_power_kw:.2f} kW")
+# 각 시나리오별 부하율 및 소비 전력 계산
+load_factor_ramp = required_hp_ramp / st.session_state.actual_hp if st.session_state.actual_hp > 0 else 0
+estimated_power_ramp = st.session_state.actual_rated_power * load_factor_ramp
+
+load_factor_soak = required_hp_soak / st.session_state.actual_hp if st.session_state.actual_hp > 0 else 0
+estimated_power_soak = st.session_state.actual_rated_power * load_factor_soak
+
+# 결과 표시
+col1, col2 = st.columns(2)
+fan_motor_load_kw = st.session_state.fan_motor_load
+fan_soak_factor = st.session_state.fan_soak_factor / 100.0 # %를 소수점으로 변환
+
+with col1:
+    st.markdown("##### 🌡️ 온도 변화 시")
+    st.metric("총 열부하", f"{total_heat_load_ramp:.2f} W")
+    st.metric("최소 필요 마력 (HP)", f"{required_hp_ramp:.2f} HP")
+    st.metric("예상 부하율", f"{load_factor_ramp:.1%}")
+    # 온도 변화 시에는 정격 부하 100%를 그대로 더함
+    total_consumption_ramp = estimated_power_ramp + fan_motor_load_kw
+    st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_ramp:.2f} kW")
+
+with col2:
+    st.markdown("##### 💧 온도 유지 시")
+    st.metric("총 열부하", f"{total_heat_load_soak:.2f} W")
+    st.metric("최소 필요 마력 (HP)", f"{required_hp_soak:.2f} HP")
+    st.metric("예상 부하율", f"{load_factor_soak:.1%}")
+    # ★★★★★ 온도 유지 시에는 부하율을 적용하여 계산 ★★★★★
+    fan_soak_load_kw = fan_motor_load_kw * fan_soak_factor
+    total_consumption_soak = estimated_power_soak + fan_soak_load_kw
+    st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_soak:.2f} kW")
 
 # 부하율이 100%를 초과할 경우 경고 메시지 표시
-if load_factor > 1.0:
-    st.warning("경고: 계산된 필요 마력이 실제 장비의 마력보다 큽니다. 장비 용량이 부족할 수 있습니다.")
+if load_factor_ramp > 1.0:
+    st.warning("경고: '온도 변화 시' 필요 마력이 실제 장비의 마력보다 큽니다. 장비 용량이 부족할 수 있습니다.")
 
 st.info("💡 위 계산은 설정된 모든 부하와 온도별 성능 계수(COP)를 반영한 결과입니다.")
