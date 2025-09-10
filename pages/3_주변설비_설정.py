@@ -28,7 +28,9 @@ def initialize_chamber_specs():
         'sus_thickness': 1.2, # 내부 벽체 두께 기본값 추가
         'min_temp_spec': -10.0, 'max_temp_spec': 80.0,
         'outside_temp': 25.0, 'load_type': '없음', 'num_cells': 4,
-        'cell_size': '211Ah (현대차 규격)', 'ramp_rate': 1.0
+        'cell_size': '211Ah (현대차 규격)', 'ramp_rate': 1.0,
+        'actual_hp': 5.0, # 실제 장비 마력 기본값
+        'actual_rated_power': 3.5 # 실제 장비 정격 전력 기본값 (kW)
         # 'fan_motor_load'와 'internal_mass' 삭제
     }
     for key, value in defaults.items():
@@ -87,6 +89,15 @@ st.subheader("4. 온도 변화 속도 설정")
 st.number_input("목표 온도 변화 속도 (°C/min)", key='ramp_rate', step=0.1, format="%.1f")
 
 st.markdown("---")
+
+# ★★★★★ 5. 실제 냉동기 사양 입력 UI 추가 ★★★★★
+st.subheader("5. 실제 냉동기 사양 입력")
+
+col_ac1, col_ac2 = st.columns(2)
+with col_ac1:
+    st.selectbox("실제 장비 마력 (HP)", options=[2.0, 3.0, 5.0, 7.5, 10.0, 15.0, 20.0], key='actual_hp')
+with col_ac2:
+    st.number_input("실제 장비 정격 소비 전력 (kW)", min_value=0.0, step=0.1, format="%.2f", key='actual_rated_power')
 
 # --- 5. 자동 계산 결과 ---
 st.subheader("자동 계산 결과")
@@ -157,6 +168,16 @@ required_electrical_power_w = total_heat_load_w / cop if cop > 0 else float('inf
 #     여기에 안전율 1.3을 적용
 required_hp = (required_electrical_power_w * 1.3) / 746
 
+# ★★★★★ 부하율 및 실제 소비 전력 계산 추가 ★★★★★
+actual_hp = st.session_state.actual_hp
+actual_rated_power = st.session_state.actual_rated_power
+
+# (1) 부하율 계산
+load_factor = required_hp / actual_hp if actual_hp > 0 else 0
+
+# (2) 예상 실제 소비 전력 계산
+estimated_actual_power_kw = actual_rated_power * load_factor
+
 # --- 결과 표시 ---
 col_res1, col_res2, col_res3 = st.columns(3)
 with col_res1:
@@ -165,5 +186,19 @@ with col_res2:
     st.metric("예상 성능 계수 (COP)", f"{cop:.2f}")
 with col_res3:
     st.metric("최소 필요 마력 (HP)", f"{required_hp:.2f} HP")
+
+st.markdown("---")
+st.subheader("✔️ 최종 소비 전력 예측")
+
+# 새로운 결과 표시
+col_final1, col_final2 = st.columns(2)
+with col_final1:
+    st.metric("예상 부하율", f"{load_factor:.1%}") # % 형태로 표시
+with col_final2:
+    st.metric("예상 실제 소비 전력", f"{estimated_actual_power_kw:.2f} kW")
+
+# 부하율이 100%를 초과할 경우 경고 메시지 표시
+if load_factor > 1.0:
+    st.warning("경고: 계산된 필요 마력이 실제 장비의 마력보다 큽니다. 장비 용량이 부족할 수 있습니다.")
 
 st.info("💡 위 계산은 설정된 모든 부하와 온도별 성능 계수(COP)를 반영한 결과입니다.")
