@@ -30,9 +30,11 @@ def initialize_chamber_specs():
         'outside_temp': 25.0, 'load_type': '없음', 'num_cells': 4,
         'cell_size': '211Ah (현대차 규격)', 'ramp_rate': 1.0,
         'actual_hp': 5.0, # 실제 장비 마력 기본값
-        'actual_rated_power': 3.5 # 실제 장비 정격 전력 기본값 (kW)
-        # 'fan_motor_load'와 'internal_mass' 삭제
+        'actual_rated_power': 3.5, # 실제 장비 정격 전력 기본값 (kW)
+        'cooling_type': '공냉식', # 냉각 방식 기본값
+        'cooling_water_delta_t': 5.0 # 냉각수 온도차 기본값
     }
+
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
@@ -61,12 +63,20 @@ st.markdown("---")
 # --- 2. 온도 조건 입력 UI ---
 st.subheader("2. 온도 조건 입력")
 col_temp1, col_temp2, col_temp3 = st.columns(3)
+
 with col_temp1:
-    st.number_input("챔버 최저 온도 사양 (°C)", step=1.0, format="%.1f", key='min_temp_spec')
+    st.number_input("챔버 최저 온도 사양 (°C)", key='min_temp_spec')
+
 with col_temp2:
-    st.number_input("챔버 최고 온도 사양 (°C)", step=1.0, format="%.1f", key='max_temp_spec')
+    # '최고 온도 사양'을 '목표 운전 온도'로 변경
+    st.number_input(
+        "목표 운전 온도 (°C)", 
+        key='target_temp',
+        help="시뮬레이션하고 싶은 실제 운전 온도를 입력합니다."
+    )
+
 with col_temp3:
-    st.number_input("외부 설정 온도 (°C)", step=1.0, format="%.1f", key='outside_temp', help="챔버가 놓인 공간의 평균 온도를 입력합니다.")
+    st.number_input("외부 설정 온도 (°C)", key='outside_temp')
 
 st.markdown("---")
 
@@ -108,8 +118,40 @@ with col_ac1:
 with col_ac2:
     st.number_input("실제 장비 정격 소비 전력 (kW)", min_value=0.0, step=0.1, format="%.2f", key='actual_rated_power')
 
+# ★★★★★ 6. 냉각 방식 설정 UI 추가 ★★★★★
+st.markdown("---")
+st.subheader("6. 냉각 방식 설정")
+
+col_cool1, col_cool2 = st.columns(2)
+with col_cool1:
+    st.selectbox("냉각 방식", options=['공냉식', '수냉식'], key='cooling_type')
+
+# 수냉식을 선택했을 때만 온도차 입력창 표시
+if st.session_state.cooling_type == '수냉식':
+    with col_cool2:
+        st.number_input(
+            "냉각수 설계 온도차 (ΔT, °C)", 
+            min_value=0.1,
+            value=5.0, 
+            step=0.1, 
+            format="%.1f", 
+            key='cooling_water_delta_t',
+            help="냉각수가 냉동기를 통과하며 상승하는 온도차입니다. (일반적으로 5°C)"
+        )
+
 # --- 5. 자동 계산 결과 ---
 st.subheader("자동 계산 결과")
+
+# ★★★★★ 안전율 설정 슬라이더 추가 ★★★★★
+safety_factor = st.slider(
+    "안전율 (Safety Factor)", 
+    min_value=1.0, 
+    max_value=3.0, 
+    value=1.5, # 기본값 1.5배
+    step=0.1,
+    help="계산된 총 열부하에 적용할 안전율입니다. 제조업체는 보통 1.5~2.5배 이상의 높은 안전율을 적용합니다."
+)
+
 
 COP_TABLE = {
     10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -30: 0.9, -40: 0.5, -50: 0.3
@@ -125,13 +167,17 @@ chamber_d = st.session_state.chamber_d
 chamber_h = st.session_state.chamber_h
 insulation_type = st.session_state.insulation_type
 insulation_thickness = st.session_state.insulation_thickness
-target_temp = st.session_state.min_temp_spec
 outside_temp = st.session_state.outside_temp
 load_type = st.session_state.load_type
 num_cells = st.session_state.num_cells
 fan_motor_load_w = st.session_state.fan_motor_load * 1000
 ramp_rate = st.session_state.ramp_rate
 sus_thickness_m = st.session_state.sus_thickness / 1000.0 # 내부 벽체 두께
+target_temp = st.session_state.target_temp # 사용자가 입력한 '목표 운전 온도'를 사용
+outside_temp = st.session_state.outside_temp
+# 2. 온도차(ΔT) 계산
+delta_T = abs(target_temp - outside_temp)
+
 
 # 1. 전도 부하 계산
 k_value = K_VALUES.get(insulation_type, 0.023)
@@ -173,15 +219,21 @@ cop = np.interp(target_temp, cop_temps, cop_values)
 
 # 시나리오 1: 온도 변화 시 최종 계산
 required_electrical_power_ramp = total_heat_load_ramp / cop if cop > 0 else float('inf')
-required_hp_ramp = (required_electrical_power_ramp * 1.3) / 746
+required_hp_ramp = (required_electrical_power_ramp * safety_factor) / 746
 load_factor_ramp = required_hp_ramp / st.session_state.actual_hp if st.session_state.actual_hp > 0 else 0
 estimated_power_ramp = st.session_state.actual_rated_power * load_factor_ramp
 
 # 시나리오 2: 온도 유지 시 최종 계산
 required_electrical_power_soak = total_heat_load_soak / cop if cop > 0 else float('inf')
-required_hp_soak = (required_electrical_power_soak * 1.3) / 746
+required_hp_soak = (required_electrical_power_soak * safety_factor) / 746
 load_factor_soak = required_hp_soak / st.session_state.actual_hp if st.session_state.actual_hp > 0 else 0
 estimated_power_soak = st.session_state.actual_rated_power * load_factor_soak
+
+# ★★★★★ 냉각 부하 계산 추가 ★★★★★
+# 버려야 할 총 열량(W) = 챔버 총 열부하(W) + 냉동기 소비 전력(W)
+# 두 시나리오에 대해 각각 계산
+total_heat_to_reject_ramp = total_heat_load_ramp + (estimated_power_ramp * 1000)
+total_heat_to_reject_soak = total_heat_load_soak + (estimated_power_soak * 1000)
 
 # 결과 표시
 st.markdown("---")
@@ -221,5 +273,34 @@ with col2:
 # 부하율이 100%를 초과할 경우 경고 메시지 표시
 if load_factor_ramp > 1.0:
     st.warning("경고: '온도 변화 시' 필요 마력이 실제 장비의 마력보다 큽니다. 장비 용량이 부족할 수 있습니다.")
+
+st.markdown("---")
+st.subheader("❄️ 냉각 시스템 요구 사양")
+
+cooling_type = st.session_state.cooling_type
+
+# --- 시나리오별 냉각 요구 사양 표시 ---
+col_cool_res1, col_cool_res2 = st.columns(2)
+
+with col_cool_res1:
+    st.markdown("##### 🌡️ 온도 변화 시")
+    if cooling_type == '공냉식':
+        # 총 발열량을 BTU/h 단위로도 변환하여 표시 (1 W ≈ 3.41 BTU/h)
+        st.metric("총 발열량", f"{total_heat_to_reject_ramp / 1000:.2f} kW", help=f"({(total_heat_to_reject_ramp * 3.41):,.0f} BTU/h)")
+        st.info("해당 발열량을 처리할 수 있는 용량의 공조 시스템이 필요합니다.")
+    elif cooling_type == '수냉식':
+        # 필요 유량 계산 (LPM)
+        delta_t = st.session_state.cooling_water_delta_t
+        required_flow_rate = (total_heat_to_reject_ramp / (4186 * delta_t)) * 60 if delta_t > 0 else 0
+        st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM")
+
+with col_cool_res2:
+    st.markdown("##### 💧 온도 유지 시")
+    if cooling_type == '공냉식':
+        st.metric("총 발열량", f"{total_heat_to_reject_soak / 1000:.2f} kW", help=f"({(total_heat_to_reject_soak * 3.41):,.0f} BTU/h)")
+    elif cooling_type == '수냉식':
+        delta_t = st.session_state.cooling_water_delta_t
+        required_flow_rate = (total_heat_to_reject_soak / (4186 * delta_t)) * 60 if delta_t > 0 else 0
+        st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM")
 
 st.info("💡 위 계산은 설정된 모든 부하와 온도별 성능 계수(COP)를 반영한 결과입니다.")
