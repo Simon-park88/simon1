@@ -65,18 +65,33 @@ st.subheader("2. 온도 조건 입력")
 col_temp1, col_temp2, col_temp3 = st.columns(3)
 
 with col_temp1:
-    st.number_input("챔버 최저 온도 사양 (°C)", key='min_temp_spec')
+    st.number_input(
+        "챔버 최저 온도 사양 (°C)", 
+        step=1.0, 
+        format="%.1f", 
+        key='min_temp_spec'
+    )
 
 with col_temp2:
-    # '최고 온도 사양'을 '목표 운전 온도'로 변경
     st.number_input(
         "목표 운전 온도 (°C)", 
+        # ★★★★★ 이 부분이 추가되었습니다 ★★★★★
+        min_value=st.session_state.min_temp_spec, # 최저 입력값을 '최저 온도 사양' 값으로 제한
+        max_value=st.session_state.max_temp_spec, # 최고 입력값도 '최고 온도 사양'으로 제한
+        # ★★★★★ 여기까지 추가 ★★★★★
+        step=1.0, 
+        format="%.1f", 
         key='target_temp',
         help="시뮬레이션하고 싶은 실제 운전 온도를 입력합니다."
     )
 
 with col_temp3:
-    st.number_input("외부 설정 온도 (°C)", key='outside_temp')
+    st.number_input(
+        "외부 설정 온도 (°C)", 
+        step=1.0, 
+        format="%.1f", 
+        key='outside_temp'
+    )
 
 st.markdown("---")
 
@@ -84,7 +99,7 @@ st.markdown("---")
 st.subheader("3. 내부 부하 설정")
 
 # 팬/모터 '정격' 부하 입력
-st.number_input("팬/모터 정격 부하 (kW)", key='fan_motor_load', help="온도 변화 시 사용되는 최대 부하입니다.", format="%.2f")
+st.number_input("팬/모터 정격 부하 (kW)", key='fan_motor_load', value=1.5, help="온도 변화 시 사용되는 최대 부하입니다.", format="%.2f")
 
 # ★★★★★ 온도 유지 시 부하율 슬라이더 추가 ★★★★★
 st.slider(
@@ -109,14 +124,34 @@ st.number_input("목표 온도 변화 속도 (°C/min)", key='ramp_rate', step=0
 
 st.markdown("---")
 
-# ★★★★★ 5. 실제 냉동기 사양 입력 UI 추가 ★★★★★
-st.subheader("5. 실제 냉동기 사양 입력")
+# ★★★★★ 5. 냉동 방식 및 실제 사양 입력 (UI 수정) ★★★★★
+st.subheader("5. 냉동 방식 및 실제 사양 입력")
 
-col_ac1, col_ac2 = st.columns(2)
-with col_ac1:
-    st.selectbox("실제 장비 마력 (HP)", options=[2.0, 3.0, 5.0, 7.5, 10.0, 15.0, 20.0], key='actual_hp')
-with col_ac2:
-    st.number_input("실제 장비 정격 소비 전력 (kW)", min_value=0.0, step=0.1, format="%.2f", key='actual_rated_power')
+# 냉동 방식 수동 선택
+refrigeration_system = st.selectbox(
+    "설치된 냉동 방식 선택",
+    options=['1원 냉동', '2원 냉동'],
+    key='refrigeration_system',
+    help="챔버에 설치된 실제 냉동 방식을 선택합니다."
+)
+
+# 선택된 냉동 방식에 따라 다른 입력창 표시
+if st.session_state.refrigeration_system == '1원 냉동':
+    col_ac1, col_ac2 = st.columns(2)
+    with col_ac1:
+        st.selectbox("실제 장비 마력 (HP)", options=[2.0, 3.0, 5.0, 7.5, 10.0], key='actual_hp_1stage')
+    with col_ac2:
+        st.number_input("실제 장비 정격 소비 전력 (kW)", min_value=0.0, value=3.0, step=0.1, key='actual_rated_power_1stage')
+
+elif st.session_state.refrigeration_system == '2원 냉동':
+    st.markdown("###### 2원 냉동 시스템 사양")
+    col_2ac1, col_2ac2 = st.columns(2)
+    with col_2ac1:
+        st.selectbox("1단(고온측) 마력 (HP)", options=[2.0, 3.0, 5.0, 7.5, 10.0], key='actual_hp_2stage_h')
+        st.selectbox("2단(저온측) 마력 (HP)", options=[2.0, 3.0, 5.0, 7.5, 10.0], key='actual_hp_2stage_l')
+    with col_2ac2:
+        st.number_input("1단(고온측) 정격 전력 (kW)", min_value=0.0, value=3.0, step=0.1, key='actual_rated_power_2stage_h')
+        st.number_input("2단(저온측) 정격 전력 (kW)", min_value=0.0, value=3.0, step=0.1, key='actual_rated_power_2stage_l')
 
 # ★★★★★ 6. 냉각 방식 설정 UI 추가 ★★★★★
 st.markdown("---")
@@ -152,14 +187,14 @@ safety_factor = st.slider(
     help="계산된 총 열부하에 적용할 안전율입니다. 제조업체는 보통 1.5~2.5배 이상의 높은 안전율을 적용합니다."
 )
 
-
-COP_TABLE = {
-    10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -30: 0.9, -40: 0.5, -50: 0.3
+# 1원 냉동 사이클 COP 테이블
+COP_TABLE_1STAGE = {
+    10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -25: 1.2 # -25°C 이하로는 효율 급감
 }
-
-sorted_cop_items = sorted(COP_TABLE.items())
-cop_temps = np.array([item[0] for item in sorted_cop_items])
-cop_values = np.array([item[1] for item in sorted_cop_items])
+# 2원 냉동 사이클 COP 테이블 (더 낮은 온도에서 더 높은 효율)
+COP_TABLE_2STAGE = {
+    -20: 2.5, -30: 2.0, -40: 1.5, -50: 1.1, -60: 0.8, -70: 0.5
+}
 
 # --- st.session_state에서 모든 최신 값 가져오기 ---
 chamber_w = st.session_state.chamber_w
@@ -173,11 +208,37 @@ num_cells = st.session_state.num_cells
 fan_motor_load_w = st.session_state.fan_motor_load * 1000
 ramp_rate = st.session_state.ramp_rate
 sus_thickness_m = st.session_state.sus_thickness / 1000.0 # 내부 벽체 두께
-target_temp = st.session_state.target_temp # 사용자가 입력한 '목표 운전 온도'를 사용
 outside_temp = st.session_state.outside_temp
 # 2. 온도차(ΔT) 계산
+min_temp_spec = st.session_state.min_temp_spec
+target_temp = st.session_state.target_temp
 delta_T = abs(target_temp - outside_temp)
 
+# ★★★★★ 최종 소비 전력 예측 (로직 수정) ★★★★★
+# '목표 운전 온도'에 따라 실제 작동할 COP 테이블 선택
+if st.session_state.target_temp > -25:
+    operating_system = "1원 냉동 (작동 중)"
+    sorted_cop_items = sorted(COP_TABLE_1STAGE.items())
+else: # -25°C 이하 운전
+    operating_system = "2원 냉동 (작동 중)"
+    sorted_cop_items = sorted(COP_TABLE_2STAGE.items())
+
+cop_temps = np.array([item[0] for item in sorted_cop_items])
+cop_values = np.array([item[1] for item in sorted_cop_items])
+cop = np.interp(st.session_state.target_temp, cop_temps, cop_values)
+
+# 설치된 시스템과 운전 조건에 따라 실제 마력과 정격 전력을 결정
+actual_hp, actual_rated_power = 0, 0
+if st.session_state.refrigeration_system == '1원 냉동':
+    actual_hp = st.session_state.actual_hp_1stage
+    actual_rated_power = st.session_state.actual_rated_power_1stage
+elif st.session_state.refrigeration_system == '2원 냉동':
+    if operating_system == "1원 냉동 (작동 중)": # -25°C 이상 운전
+        actual_hp = st.session_state.actual_hp_2stage_h
+        actual_rated_power = st.session_state.actual_rated_power_2stage_h
+    else: # -25°C 이하 운전 (두 시스템 모두 작동)
+        actual_hp = st.session_state.actual_hp_2stage_h + st.session_state.actual_hp_2stage_l
+        actual_rated_power = st.session_state.actual_rated_power_2stage_h + st.session_state.actual_rated_power_2stage_l
 
 # 1. 전도 부하 계산
 k_value = K_VALUES.get(insulation_type, 0.023)
@@ -247,29 +308,25 @@ load_factor_soak = required_hp_soak / st.session_state.actual_hp if st.session_s
 estimated_power_soak = st.session_state.actual_rated_power * load_factor_soak
 
 # 결과 표시
-col1, col2 = st.columns(2)
-fan_motor_load_kw = st.session_state.fan_motor_load
-fan_soak_factor = st.session_state.fan_soak_factor / 100.0 # %를 소수점으로 변환
+st.markdown("---")
+# 선택된 냉동 방식을 명확하게 표시
+st.info(f"선택된 시스템: **{st.session_state.refrigeration_system}** | 현재 작동 방식: **{operating_system}** (목표 온도 기준)")
 
+col1, col2 = st.columns(2)
 with col1:
     st.markdown("##### 🌡️ 온도 변화 시")
     st.metric("총 열부하", f"{total_heat_load_ramp:.2f} W")
     st.metric("최소 필요 마력 (HP)", f"{required_hp_ramp:.2f} HP")
     st.metric("예상 부하율", f"{load_factor_ramp:.1%}")
-    # 온도 변화 시에는 정격 부하 100%를 그대로 더함
-    total_consumption_ramp = estimated_power_ramp + fan_motor_load_kw
-    st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_ramp:.2f} kW")
+    st.metric("챔버 전체 예상 소비 전력", f"{(estimated_power_ramp + st.session_state.fan_motor_load):.2f} kW")
 
 with col2:
     st.markdown("##### 💧 온도 유지 시")
     st.metric("총 열부하", f"{total_heat_load_soak:.2f} W")
     st.metric("최소 필요 마력 (HP)", f"{required_hp_soak:.2f} HP")
     st.metric("예상 부하율", f"{load_factor_soak:.1%}")
-    # ★★★★★ 온도 유지 시에는 부하율을 적용하여 계산 ★★★★★
-    fan_soak_load_kw = fan_motor_load_kw * fan_soak_factor
-    total_consumption_soak = estimated_power_soak + fan_soak_load_kw
-    st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_soak:.2f} kW")
-
+    st.metric("챔버 전체 예상 소비 전력", f"{(estimated_power_soak + st.session_state.fan_motor_load):.2f} kW")
+    
 # 부하율이 100%를 초과할 경우 경고 메시지 표시
 if load_factor_ramp > 1.0:
     st.warning("경고: '온도 변화 시' 필요 마력이 실제 장비의 마력보다 큽니다. 장비 용량이 부족할 수 있습니다.")
