@@ -46,6 +46,8 @@ K_VALUES = {"우레탄폼": 0.023, "글라스울": 0.040, "세라크울": 0.150}
 DENSITY_SUS = 7930
 COP_TABLE_1STAGE = {10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -25: 1.2}
 COP_TABLE_2STAGE = {-20: 2.5, -30: 2.0, -40: 1.5, -50: 1.1, -60: 0.8, -70: 0.5}
+# ★★★★★ 단위 변환 상수 추가 ★★★★★
+WATT_TO_KCAL_H = 0.86 # 1W = 0.86 kcal/h
 
 # --- 3. UI 구성 ---
 st.subheader("1. 챔버 사양")
@@ -71,7 +73,7 @@ st.selectbox("제품 부하 종류", options=['없음', '각형 배터리'], key
 if st.session_state.load_type == '각형 배터리':
     c1, c2 = st.columns(2)
     c1.number_input("챔버 내 셀 개수", min_value=1, step=1, key='num_cells')
-    c2.selectbox("셀 사이즈 선택", options=['211Ah (현대차 규격)', '기타'], key='cell_size') # <- 차후 수정/추가
+    c2.selectbox("셀 사이즈 선택", options=['211Ah (현대차 규격)', '기타'], key='cell_size')
 
 st.subheader("4. 온도 변화 속도")
 st.number_input("목표 온도 변화 속도 (°C/min)", key='ramp_rate', step=0.1, format="%.1f")
@@ -103,10 +105,8 @@ st.markdown("---")
 st.subheader("자동 계산 결과")
 st.slider("안전율 (Safety Factor)", 1.0, 3.0, key='safety_factor', help="계산된 총 열부하에 적용할 안전율입니다.")
 
-# st.session_state에서 모든 최신 값 가져오기
 specs = st.session_state
 
-# 모든 부하 계산 (변수 할당)
 k_value = K_VALUES.get(specs.insulation_type, 0.023)
 thickness_m = specs.insulation_thickness / 1000.0
 U_value = (k_value / thickness_m) if thickness_m > 0 else 0
@@ -130,7 +130,6 @@ fan_motor_load_w_soak = fan_motor_load_w_ramp * (specs.fan_soak_factor / 100.0)
 total_heat_load_ramp = conduction_load_w + ramp_load_w + internal_product_load_w + fan_motor_load_w_ramp
 total_heat_load_soak = conduction_load_w + internal_product_load_w + fan_motor_load_w_soak
 
-# COP 및 최종 소비 전력 예측
 if specs.target_temp > -25:
     operating_system = "1원 냉동 (작동 중)"; sorted_cop_items = sorted(COP_TABLE_1STAGE.items())
 else:
@@ -193,14 +192,16 @@ c1, c2 = st.columns(2)
 with c1:
     st.markdown("##### 🌡️ 온도 변화 시")
     if specs.cooling_type == '공냉식':
-        st.metric("총 발열량", f"{total_heat_to_reject_ramp / 1000:.2f} kW", help=f"({(total_heat_to_reject_ramp * 3.41):,.0f} BTU/h)")
+        # ★★★★★ 단위 표시 수정 ★★★★★
+        st.metric("총 발열량", f"{total_heat_to_reject_ramp / 1000:.2f} kW", help=f"({(total_heat_to_reject_ramp * WATT_TO_KCAL_H):,.0f} kcal/h)")
     elif specs.cooling_type == '수냉식':
         required_flow_rate = (total_heat_to_reject_ramp / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
         st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM")
 with c2:
     st.markdown("##### 💧 온도 유지 시")
     if specs.cooling_type == '공냉식':
-        st.metric("총 발열량", f"{total_heat_to_reject_soak / 1000:.2f} kW", help=f"({(total_heat_to_reject_soak * 3.41):,.0f} BTU/h)")
+        # ★★★★★ 단위 표시 수정 ★★★★★
+        st.metric("총 발열량", f"{total_heat_to_reject_soak / 1000:.2f} kW", help=f"({(total_heat_to_reject_soak * WATT_TO_KCAL_H):,.0f} kcal/h)")
     elif specs.cooling_type == '수냉식':
         required_flow_rate = (total_heat_to_reject_soak / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
         st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM")
@@ -218,12 +219,18 @@ if st.button("저장하기"):
         "outside_temp": specs.outside_temp,
         "load_type": specs.load_type,
         "num_cells": specs.num_cells,
-        "fan_motor_load": specs.fan_motor_load,   # kW 단위
+        "fan_motor_load": specs.fan_motor_load,
         "fan_soak_factor": specs.fan_soak_factor,
         "sus_thickness": specs.sus_thickness,
         "ramp_rate": specs.ramp_rate,
         "refrigeration_system": specs.refrigeration_system,
         "safety_factor": specs.safety_factor,
+        "actual_hp_1stage": specs.actual_hp_1stage,
+        "actual_rated_power_1stage": specs.actual_rated_power_1stage,
+        "actual_hp_2stage_h": specs.actual_hp_2stage_h,
+        "actual_rated_power_2stage_h": specs.actual_rated_power_2stage_h,
+        "actual_hp_2stage_l": specs.actual_hp_2stage_l,
+        "actual_rated_power_2stage_l": specs.actual_rated_power_2stage_l,
 
         # 계산된 값
         "U_value": U_value,
@@ -237,4 +244,4 @@ if st.button("저장하기"):
         "total_heat_load_ramp": total_heat_load_ramp,
         "total_heat_load_soak": total_heat_load_soak,
     }
-    st.success("챔버 사양이 저장되었습니다 ✅ (챔버 온도 프로파일 페이지에서 불러올 수 있습니다)")
+    st.success("챔버 사양이 저장되었습니다 ✅ (다른 페이지에서 불러올 수 있습니다)")
