@@ -71,7 +71,7 @@ st.selectbox("제품 부하 종류", options=['없음', '각형 배터리'], key
 if st.session_state.load_type == '각형 배터리':
     c1, c2 = st.columns(2)
     c1.number_input("챔버 내 셀 개수", min_value=1, step=1, key='num_cells')
-    c2.selectbox("셀 사이즈 선택", options=['211Ah (현대차 규격)', '기타'], key='cell_size')
+    c2.selectbox("셀 사이즈 선택", options=['211Ah (현대차 규격)', '기타'], key='cell_size') # <- 차후 수정/추가
 
 st.subheader("4. 온도 변화 속도")
 st.number_input("목표 온도 변화 속도 (°C/min)", key='ramp_rate', step=0.1, format="%.1f")
