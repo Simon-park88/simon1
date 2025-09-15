@@ -14,15 +14,16 @@ def initialize_chamber_specs():
         'chamber_w': 1000, 'chamber_d': 1000, 'chamber_h': 1000,
         'insulation_type': '우레탄폼', 'insulation_thickness': 100,
         'sus_thickness': 1.2,
-        'min_temp_spec': -10.0, 'max_temp_spec': 40.0, 'target_temp': 25.0,
+        'min_temp_spec': -10.0, 'max_temp_spec': 85.0, 'target_temp': 80.0,
         'outside_temp': 25.0,
-        'fan_motor_load': 2.0, 'fan_soak_factor': 30,
-        'load_type': '없음', 'num_cells': 4, 'cell_size': '211Ah (현대차 규격)',
+        'fan_motor_load': 0.5, 'fan_soak_factor': 30,
+        'load_type': '없음', 'num_cells': 4,
         'ramp_rate': 1.0,
         'refrigeration_system': '1원 냉동',
         'actual_hp_1stage': 5.0, 'actual_rated_power_1stage': 3.5,
         'actual_hp_2stage_h': 3.0, 'actual_hp_2stage_l': 2.0,
         'actual_rated_power_2stage_h': 2.0, 'actual_rated_power_2stage_l': 1.5,
+        'heater_capacity': 5.0,
         'cooling_type': '공냉식', 'cooling_water_delta_t': 5.0,
         'safety_factor': 1.5
     }
@@ -38,7 +39,6 @@ def update_fan_recommendation():
     elif 1 <= volume_m3 < 8: st.session_state.fan_motor_load = 1.5
     else: st.session_state.fan_motor_load = 2.5
 
-# 앱 시작 시 초기화 함수 실행
 initialize_chamber_specs()
 
 # --- 2. 데이터 정의 ---
@@ -46,8 +46,7 @@ K_VALUES = {"우레탄폼": 0.023, "글라스울": 0.040, "세라크울": 0.150}
 DENSITY_SUS = 7930
 COP_TABLE_1STAGE = {10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -25: 1.2}
 COP_TABLE_2STAGE = {-20: 2.5, -30: 2.0, -40: 1.5, -50: 1.1, -60: 0.8, -70: 0.5}
-# ★★★★★ 단위 변환 상수 추가 ★★★★★
-WATT_TO_KCAL_H = 0.86 # 1W = 0.86 kcal/h
+WATT_TO_KCAL_H = 0.86
 
 # --- 3. UI 구성 ---
 st.subheader("1. 챔버 사양")
@@ -62,8 +61,13 @@ c3.number_input("내부 벽체 두께 (mm)", min_value=0.1, step=0.1, format="%.
 st.subheader("2. 온도 조건")
 c1, c2, c3 = st.columns(3)
 c1.number_input("챔버 최저 온도 사양 (°C)", step=-1.0, format="%.1f", key='min_temp_spec')
-c2.number_input("목표 운전 온도 (°C)", min_value=st.session_state.min_temp_spec, max_value=st.session_state.max_temp_spec, step=1.0, format="%.1f", key='target_temp')
+c2.number_input("챔버 최고 온도 사양 (°C)", step=1.0, format="%.1f", key='max_temp_spec')
 c3.number_input("외부 설정 온도 (°C)", step=1.0, format="%.1f", key='outside_temp')
+
+st.number_input("목표 운전 온도 (°C)", 
+               min_value=st.session_state.min_temp_spec, 
+               max_value=st.session_state.max_temp_spec, 
+               step=1.0, format="%.1f", key='target_temp')
 
 st.subheader("3. 내부 부하")
 c1, c2 = st.columns(2)
@@ -76,10 +80,15 @@ if st.session_state.load_type == '각형 배터리':
     c2.selectbox("셀 사이즈 선택", options=['211Ah (현대차 규격)', '기타'], key='cell_size')
 
 st.subheader("4. 온도 변화 속도")
-st.number_input("목표 온도 변화 속도 (°C/min)", key='ramp_rate', step=0.1, format="%.1f")
+st.number_input("사용자 목표 승온/강하 속도 (°C/min)", key='ramp_rate', step=0.1, format="%.1f", help="이 값은 필요 열/냉동 부하 및 승온/강하 시간을 계산하는 기준이 됩니다.")
 
-st.subheader("5. 냉동 방식 및 실제 사양")
-st.selectbox("설치된 냉동 방식", options=['1원 냉동', '2원 냉동'], key='refrigeration_system')
+st.subheader("5. 냉동 및 가열 방식")
+c1, c2 = st.columns(2)
+with c1:
+    st.selectbox("설치된 냉동 방식", options=['1원 냉동', '2원 냉동'], key='refrigeration_system')
+with c2:
+    st.number_input("실제 히터 용량 (kW)", min_value=0.0, step=0.1, key='heater_capacity')
+
 if st.session_state.refrigeration_system == '1원 냉동':
     c1, c2 = st.columns(2)
     c1.selectbox("실제 장비 마력 (HP)", options=[2.0, 3.0, 5.0, 7.5, 10.0, 15.0, 20.0], key='actual_hp_1stage')
@@ -107,92 +116,130 @@ st.slider("안전율 (Safety Factor)", 1.0, 3.0, key='safety_factor', help="계�
 
 specs = st.session_state
 
+# 기본 부하 계산
 k_value = K_VALUES.get(specs.insulation_type, 0.023)
 thickness_m = specs.insulation_thickness / 1000.0
 U_value = (k_value / thickness_m) if thickness_m > 0 else 0
 A = 2 * ((specs.chamber_w * specs.chamber_d) + (specs.chamber_w * specs.chamber_h) + (specs.chamber_d * specs.chamber_h)) / 1_000_000
-delta_T = abs(specs.target_temp - specs.outside_temp)
-conduction_load_w = U_value * A * delta_T
+delta_T_abs = abs(specs.target_temp - specs.outside_temp)
+conduction_load_abs = U_value * A * delta_T_abs
 
 sus_volume_m3 = A * (specs.sus_thickness / 1000.0)
 calculated_internal_mass = sus_volume_m3 * DENSITY_SUS
-
 volume_m3 = (specs.chamber_w * specs.chamber_d * specs.chamber_h) / 1_000_000_000
 ramp_rate_c_per_sec = specs.ramp_rate / 60.0
-air_load_w = (volume_m3 * 1.225) * 1005 * ramp_rate_c_per_sec
-internal_mass_load_w = calculated_internal_mass * 500 * ramp_rate_c_per_sec
-ramp_load_w = air_load_w + internal_mass_load_w
+
+ramp_load_energy_per_c = (volume_m3 * 1.225 * 1005) + (calculated_internal_mass * 500)
+ramp_load_w = ramp_load_energy_per_c * ramp_rate_c_per_sec
 
 internal_product_load_w = specs.num_cells * 50.0 if specs.load_type == '각형 배터리' else 0.0
 fan_motor_load_w_ramp = specs.fan_motor_load * 1000
 fan_motor_load_w_soak = fan_motor_load_w_ramp * (specs.fan_soak_factor / 100.0)
 
-total_heat_load_ramp = conduction_load_w + ramp_load_w + internal_product_load_w + fan_motor_load_w_ramp
-total_heat_load_soak = conduction_load_w + internal_product_load_w + fan_motor_load_w_soak
+# 가열/냉각 모드 결정
+is_heating = specs.target_temp > specs.outside_temp
 
-if specs.target_temp > -25:
-    operating_system = "1원 냉동 (작동 중)"; sorted_cop_items = sorted(COP_TABLE_1STAGE.items())
+if is_heating:
+    # --- 가열 모드 계산 (사용자 목표 속도 기반) ---
+    operating_system = "히터 (가열 중)"
+    
+    # Ramp (온도 변화 시)
+    internal_gains_ramp = fan_motor_load_w_ramp + internal_product_load_w
+    # 1. 목표 속도를 맞추기 위한 평균 필요 히터 출력 계산
+    required_heater_power_ramp_w = max(0, conduction_load_abs + ramp_load_w - internal_gains_ramp)
+    
+    # 2. 목표 속도를 기준으로 한 승온 시간 계산
+    target_ramp_time_h = (delta_T_abs / specs.ramp_rate) / 60.0 if specs.ramp_rate > 0 else float('inf')
+
+    # 3. 해당 시간 동안의 총 소비 전력 및 전력량 계산
+    total_consumption_ramp_kw = (required_heater_power_ramp_w / 1000) + specs.fan_motor_load
+    energy_ramp_kwh = total_consumption_ramp_kw * target_ramp_time_h if target_ramp_time_h != float('inf') else float('inf')
+
+    # Soak (온도 유지 시)
+    internal_gains_soak = fan_motor_load_w_soak + internal_product_load_w
+    required_heater_power_soak_w = max(0, conduction_load_abs - internal_gains_soak)
+    total_consumption_soak_kw = (required_heater_power_soak_w / 1000) + (specs.fan_motor_load * (specs.fan_soak_factor / 100.0))
+
 else:
-    operating_system = "2원 냉동 (작동 중)"; sorted_cop_items = sorted(COP_TABLE_2STAGE.items())
-
-cop_temps = np.array([item[0] for item in sorted_cop_items])
-cop_values = np.array([item[1] for item in sorted_cop_items])
-cop = np.interp(specs.target_temp, cop_temps, cop_values)
-
-required_electrical_power_ramp = total_heat_load_ramp / cop if cop > 0 else float('inf')
-required_hp_ramp = (required_electrical_power_ramp * specs.safety_factor) / 746
-required_electrical_power_soak = total_heat_load_soak / cop if cop > 0 else float('inf')
-required_hp_soak = (required_electrical_power_soak * specs.safety_factor) / 746
-
-actual_hp, actual_rated_power = 0, 0
-if specs.refrigeration_system == '1원 냉동':
-    actual_hp = specs.actual_hp_1stage; actual_rated_power = specs.actual_rated_power_1stage
-elif specs.refrigeration_system == '2원 냉동':
-    if operating_system == "1원 냉동 (작동 중)":
-        actual_hp = specs.actual_hp_2stage_h; actual_rated_power = specs.actual_rated_power_2stage_h
+    # --- 냉각 모드 계산 (기존과 동일) ---
+    if specs.target_temp > -25:
+        operating_system = "1원 냉동 (냉각 중)"; sorted_cop_items = sorted(COP_TABLE_1STAGE.items())
     else:
-        actual_hp = specs.actual_hp_2stage_h + specs.actual_hp_2stage_l
-        actual_rated_power = specs.actual_rated_power_2stage_h + specs.actual_rated_power_2stage_l
+        operating_system = "2원 냉동 (냉각 중)"; sorted_cop_items = sorted(COP_TABLE_2STAGE.items())
 
-load_factor_ramp = required_hp_ramp / actual_hp if actual_hp > 0 else 0
-estimated_power_ramp_kw = actual_rated_power * load_factor_ramp
-load_factor_soak = required_hp_soak / actual_hp if actual_hp > 0 else 0
-estimated_power_soak_kw = actual_rated_power * load_factor_soak
+    total_heat_load_ramp = conduction_load_abs + ramp_load_w + internal_product_load_w + fan_motor_load_w_ramp
+    total_heat_load_soak = conduction_load_abs + internal_product_load_w + fan_motor_load_w_soak
 
-total_consumption_ramp = estimated_power_ramp_kw + specs.fan_motor_load
-total_consumption_soak = estimated_power_soak_kw + (specs.fan_motor_load * (specs.fan_soak_factor / 100.0))
+    cop_temps = np.array([item[0] for item in sorted_cop_items])
+    cop_values = np.array([item[1] for item in sorted_cop_items])
+    cop = np.interp(specs.target_temp, cop_temps, cop_values)
+
+    required_electrical_power_ramp = total_heat_load_ramp / cop if cop > 0 else float('inf')
+    required_hp_ramp = (required_electrical_power_ramp * specs.safety_factor) / 746
+    required_electrical_power_soak = total_heat_load_soak / cop if cop > 0 else float('inf')
+    required_hp_soak = (required_electrical_power_soak * specs.safety_factor) / 746
+
+    actual_hp, actual_rated_power = 0, 0
+    if specs.refrigeration_system == '1원 냉동':
+        actual_hp = specs.actual_hp_1stage; actual_rated_power = specs.actual_rated_power_1stage
+    elif specs.refrigeration_system == '2원 냉동':
+        if operating_system.startswith("1원"):
+            actual_hp = specs.actual_hp_2stage_h; actual_rated_power = specs.actual_rated_power_2stage_h
+        else:
+            actual_hp = specs.actual_hp_2stage_h + specs.actual_hp_2stage_l
+            actual_rated_power = specs.actual_rated_power_2stage_h + specs.actual_rated_power_2stage_l
+
+    load_factor_ramp = required_hp_ramp / actual_hp if actual_hp > 0 else 0
+    estimated_power_ramp_kw = actual_rated_power * load_factor_ramp
+    load_factor_soak = required_hp_soak / actual_hp if actual_hp > 0 else 0
+    estimated_power_soak_kw = actual_rated_power * load_factor_soak
+
+    total_consumption_ramp_kw = estimated_power_ramp_kw + specs.fan_motor_load
+    total_consumption_soak_kw = estimated_power_soak_kw + (specs.fan_motor_load * (specs.fan_soak_factor / 100.0))
 
 # --- 5. 결과 표시 ---
 st.markdown("---")
 st.subheader("✔️ 최종 소비 전력 예측")
-st.info(f"선택된 시스템: **{specs.refrigeration_system}** | 현재 작동 방식: **{operating_system}** (목표 온도 {specs.target_temp}°C 기준)")
+st.info(f"현재 작동 방식: **{operating_system}** (목표 온도 {specs.target_temp}°C, 외부 온도 {specs.outside_temp}°C 기준)")
 c1, c2 = st.columns(2)
 with c1:
     st.markdown("##### 🌡️ 온도 변화 시")
-    st.metric("총 열부하", f"{total_heat_load_ramp:.2f} W")
-    st.metric("최소 필요 마력 (HP)", f"{required_hp_ramp:.2f} HP")
-    st.metric("예상 부하율", f"{load_factor_ramp:.1%}")
-    st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_ramp:.2f} kW")
+    if is_heating:
+        st.metric("평균 필요 히터 출력", f"{required_heater_power_ramp_w / 1000:.2f} kW", help="목표 승온 속도를 유지하기 위해 필요한 평균 히터 출력입니다.")
+        st.metric("목표 승온 시간", f"{target_ramp_time_h:.2f} H", help="사용자가 설정한 승온 속도로 계산된 시간입니다.")
+        st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_ramp_kw:.2f} kW", help="승온 중 히터와 팬이 소비하는 평균 전력입니다.")
+        st.metric("예상 소비 전력량", f"{energy_ramp_kwh:.2f} kWh", help="목표 승온 시간 동안 소비되는 총 에너지입니다.")
+        # 히터 용량 경고
+        if (required_heater_power_ramp_w / 1000) > specs.heater_capacity:
+            st.warning(f"경고: 필요 히터 출력이 실제 히터 용량({specs.heater_capacity}kW)보다 큽니다. 목표 승온 속도를 달성할 수 없습니다.")
+    else:
+        st.metric("총 열부하", f"{total_heat_load_ramp:.2f} W")
+        st.metric("최소 필요 마력 (HP)", f"{required_hp_ramp:.2f} HP")
+        st.metric("예상 부하율", f"{load_factor_ramp:.1%}")
+        st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_ramp_kw:.2f} kW")
 with c2:
     st.markdown("##### 💧 온도 유지 시")
-    st.metric("총 열부하", f"{total_heat_load_soak:.2f} W")
-    st.metric("최소 필요 마력 (HP)", f"{required_hp_soak:.2f} HP")
-    st.metric("예상 부하율", f"{load_factor_soak:.1%}")
-    st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_soak:.2f} kW")
+    if is_heating:
+        st.metric("필요 히터 출력", f"{required_heater_power_soak_w / 1000:.2f} kW")
+        st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_soak_kw:.2f} kW")
+    else:
+        st.metric("총 열부하", f"{total_heat_load_soak:.2f} W")
+        st.metric("최소 필요 마력 (HP)", f"{required_hp_soak:.2f} HP")
+        st.metric("예상 부하율", f"{load_factor_soak:.1%}")
+        st.metric("챔버 전체 예상 소비 전력", f"{total_consumption_soak_kw:.2f} kW")
 
-if load_factor_ramp > 1.0:
+if not is_heating and load_factor_ramp > 1.0:
     st.warning("경고: '온도 변화 시' 필요 마력이 실제 장비의 마력보다 큽니다. 장비 용량이 부족할 수 있습니다.")
 
 # --- 6. 냉각 시스템 요구 사양 ---
 st.markdown("---")
 st.subheader("❄️ 냉각 시스템 요구 사양")
-total_heat_to_reject_ramp = total_heat_load_ramp + (estimated_power_ramp_kw * 1000)
-total_heat_to_reject_soak = total_heat_load_soak + (estimated_power_soak_kw * 1000)
+total_heat_to_reject_ramp = total_heat_load_ramp + (total_consumption_ramp_kw * 1000) if not is_heating else 0
+total_heat_to_reject_soak = total_heat_load_soak + (total_consumption_soak_kw * 1000) if not is_heating else 0
 c1, c2 = st.columns(2)
 with c1:
     st.markdown("##### 🌡️ 온도 변화 시")
     if specs.cooling_type == '공냉식':
-        # ★★★★★ 단위 표시 수정 ★★★★★
         st.metric("총 발열량", f"{total_heat_to_reject_ramp / 1000:.2f} kW", help=f"({(total_heat_to_reject_ramp * WATT_TO_KCAL_H):,.0f} kcal/h)")
     elif specs.cooling_type == '수냉식':
         required_flow_rate = (total_heat_to_reject_ramp / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
@@ -200,7 +247,6 @@ with c1:
 with c2:
     st.markdown("##### 💧 온도 유지 시")
     if specs.cooling_type == '공냉식':
-        # ★★★★★ 단위 표시 수정 ★★★★★
         st.metric("총 발열량", f"{total_heat_to_reject_soak / 1000:.2f} kW", help=f"({(total_heat_to_reject_soak * WATT_TO_KCAL_H):,.0f} kcal/h)")
     elif specs.cooling_type == '수냉식':
         required_flow_rate = (total_heat_to_reject_soak / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
@@ -209,39 +255,21 @@ with c2:
 # --- 7. 설정값 저장 버튼 ---
 if st.button("저장하기"):
     st.session_state["chamber_specs"] = {
-        # 기본 입력값
-        "chamber_w": specs.chamber_w,
-        "chamber_d": specs.chamber_d,
-        "chamber_h": specs.chamber_h,
-        "insulation_type": specs.insulation_type,
-        "insulation_thickness": specs.insulation_thickness,
-        "target_temp": specs.target_temp,
-        "outside_temp": specs.outside_temp,
-        "load_type": specs.load_type,
-        "num_cells": specs.num_cells,
-        "fan_motor_load": specs.fan_motor_load,
-        "fan_soak_factor": specs.fan_soak_factor,
-        "sus_thickness": specs.sus_thickness,
-        "ramp_rate": specs.ramp_rate,
-        "refrigeration_system": specs.refrigeration_system,
-        "safety_factor": specs.safety_factor,
-        "actual_hp_1stage": specs.actual_hp_1stage,
-        "actual_rated_power_1stage": specs.actual_rated_power_1stage,
-        "actual_hp_2stage_h": specs.actual_hp_2stage_h,
-        "actual_rated_power_2stage_h": specs.actual_rated_power_2stage_h,
-        "actual_hp_2stage_l": specs.actual_hp_2stage_l,
-        "actual_rated_power_2stage_l": specs.actual_rated_power_2stage_l,
-
-        # 계산된 값
-        "U_value": U_value,
-        "surface_area": A,
-        "chamber_volume": volume_m3,
-        "conduction_load_w": conduction_load_w,
-        "ramp_load_w": ramp_load_w,
-        "internal_product_load_w": internal_product_load_w,
-        "fan_motor_load_w_ramp": fan_motor_load_w_ramp,
-        "fan_motor_load_w_soak": fan_motor_load_w_soak,
-        "total_heat_load_ramp": total_heat_load_ramp,
-        "total_heat_load_soak": total_heat_load_soak,
+        "chamber_w": specs.chamber_w, "chamber_d": specs.chamber_d, "chamber_h": specs.chamber_h,
+        "insulation_type": specs.insulation_type, "insulation_thickness": specs.insulation_thickness,
+        "sus_thickness": specs.sus_thickness, "target_temp": specs.target_temp,
+        "outside_temp": specs.outside_temp, "fan_motor_load": specs.fan_motor_load,
+        "fan_soak_factor": specs.fan_soak_factor, "load_type": specs.load_type,
+        "num_cells": specs.num_cells, "ramp_rate": specs.ramp_rate,
+        "refrigeration_system": specs.refrigeration_system, "actual_hp_1stage": specs.actual_hp_1stage,
+        "actual_rated_power_1stage": specs.actual_rated_power_1stage, "actual_hp_2stage_h": specs.actual_hp_2stage_h,
+        "actual_rated_power_2stage_h": specs.actual_rated_power_2stage_h, "actual_hp_2stage_l": specs.actual_hp_2stage_l,
+        "actual_rated_power_2stage_l": specs.actual_rated_power_2stage_l, "safety_factor": specs.safety_factor,
+        "min_temp_spec": specs.min_temp_spec, "max_temp_spec": specs.max_temp_spec,
+        "heater_capacity": specs.heater_capacity, "cooling_type": specs.cooling_type,
+        "cooling_water_delta_t": specs.cooling_water_delta_t,
+        
+        "U_value": U_value, "surface_area": A, "chamber_volume": volume_m3,
     }
     st.success("챔버 사양이 저장되었습니다 ✅ (다른 페이지에서 불러올 수 있습니다)")
+
