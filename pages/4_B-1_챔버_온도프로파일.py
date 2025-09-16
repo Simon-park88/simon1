@@ -19,8 +19,8 @@ COP_TABLE_2STAGE = {-20: 2.5, -30: 2.0, -40: 1.5, -50: 1.1, -60: 0.8, -70: 0.5}
 # ★★★★★ 수정된 계산 함수 시작 ★★★★★
 def calculate_chamber_power(specs):
     """
-    주어진 사양(specs)으로 가열/냉각 모드를 자동 판단하여
-    '온도 변화 시'와 '온도 유지 시'의 소비 전력(kW)을 계산하는 함수.
+    주어진 사양(specs)으로 가열/냉각 모드를 자동 판단하고,
+    최소 구동 부하율을 반영하여 소비 전력(kW)을 계산하는 함수.
     """
     try:
         # --- 사양 추출 ---
@@ -28,11 +28,13 @@ def calculate_chamber_power(specs):
         insulation_type = specs.get('insulation_type', '우레탄폼'); insulation_thickness = specs.get('insulation_thickness', 100)
         target_temp = specs.get('target_temp', 25.0); outside_temp = specs.get('outside_temp', 25.0)
         load_type = specs.get('load_type', '없음'); num_cells = specs.get('num_cells', 0)
-        fan_motor_load = specs.get('fan_motor_load', 2.0); fan_soak_factor = specs.get('fan_soak_factor', 30)
+        fan_motor_load = specs.get('fan_motor_load', 0.5); fan_soak_factor = specs.get('fan_soak_factor', 30)
+        min_soak_load_factor = specs.get('min_soak_load_factor', 30)
         sus_thickness = specs.get('sus_thickness', 1.2); ramp_rate = specs.get('ramp_rate', 1.0)
         refrigeration_system = specs.get('refrigeration_system', '1원 냉동')
         safety_factor = specs.get('safety_factor', 1.5)
-        
+        heater_capacity = specs.get('heater_capacity', 5.0)
+
         # --- 기본 부하 계산 ---
         k_value = K_VALUES.get(insulation_type, 0.023)
         thickness_m = insulation_thickness / 1000.0
@@ -56,27 +58,32 @@ def calculate_chamber_power(specs):
         is_heating = target_temp > outside_temp
 
         if is_heating:
-            # 가열 모드
+            # --- 가열 모드 ---
+            # Ramp
             internal_gains_ramp = fan_motor_load_w_ramp + internal_product_load_w
-            required_heater_power_ramp_w = max(0, conduction_load_abs + ramp_load_w - internal_gains_ramp)
-            total_consumption_ramp_kw = (required_heater_power_ramp_w / 1000) + fan_motor_load
+            theoretical_heater_power_ramp_w = max(0, conduction_load_abs + ramp_load_w - internal_gains_ramp)
+            min_heater_power_ramp_kw = heater_capacity * (min_soak_load_factor / 100.0)
+            final_heater_power_ramp_w = max(theoretical_heater_power_ramp_w, min_heater_power_ramp_kw * 1000)
+            total_consumption_ramp_kw = (final_heater_power_ramp_w / 1000) + fan_motor_load
 
+            # Soak
             internal_gains_soak = fan_motor_load_w_soak + internal_product_load_w
-            required_heater_power_soak_w = max(0, conduction_load_abs - internal_gains_soak)
-            total_consumption_soak_kw = (required_heater_power_soak_w / 1000) + (fan_motor_load * (fan_soak_factor / 100.0))
-        else:
-            # 냉각 모드
-            total_heat_load_ramp = conduction_load_abs + ramp_load_w + internal_product_load_w + fan_motor_load_w_ramp
-            total_heat_load_soak = conduction_load_abs + internal_product_load_w + fan_motor_load_w_soak
+            theoretical_heater_power_soak_w = max(0, conduction_load_abs - internal_gains_soak)
+            min_heater_power_soak_kw = heater_capacity * (min_soak_load_factor / 100.0)
+            final_heater_power_soak_w = max(theoretical_heater_power_soak_w, min_heater_power_soak_kw * 1000)
+            total_consumption_soak_kw = (final_heater_power_soak_w / 1000) + (fan_motor_load * (fan_soak_factor / 100.0))
 
+        else:
+            # --- 냉각 모드 ---
             if target_temp > -25:
                 sorted_cop_items = sorted(COP_TABLE_1STAGE.items())
             else:
                 sorted_cop_items = sorted(COP_TABLE_2STAGE.items())
             
-            cop_temps = np.array([item[0] for item in sorted_cop_items])
-            cop_values = np.array([item[1] for item in sorted_cop_items])
-            cop = np.interp(target_temp, cop_temps, cop_values)
+            total_heat_load_ramp = conduction_load_abs + ramp_load_w + internal_product_load_w + fan_motor_load_w_ramp
+            total_heat_load_soak = conduction_load_abs + internal_product_load_w + fan_motor_load_w_soak
+
+            cop = np.interp(target_temp, [k for k,v in sorted_cop_items], [v for k,v in sorted_cop_items])
 
             required_electrical_power_ramp = total_heat_load_ramp / cop if cop > 0 else float('inf')
             required_hp_ramp = (required_electrical_power_ramp * safety_factor) / 746
@@ -85,23 +92,26 @@ def calculate_chamber_power(specs):
 
             actual_hp, actual_rated_power = 0, 0
             if refrigeration_system == '1원 냉동':
-                actual_hp = specs.get('actual_hp_1stage', 5.0)
-                actual_rated_power = specs.get('actual_rated_power_1stage', 3.5)
+                actual_hp = specs.get('actual_hp_1stage', 5.0); actual_rated_power = specs.get('actual_rated_power_1stage', 3.5)
             elif refrigeration_system == '2원 냉동':
                 if target_temp > -25:
-                    actual_hp = specs.get('actual_hp_2stage_h', 3.0)
-                    actual_rated_power = specs.get('actual_rated_power_2stage_h', 2.0)
+                    actual_hp = specs.get('actual_hp_2stage_h', 3.0); actual_rated_power = specs.get('actual_rated_power_2stage_h', 2.0)
                 else:
                     actual_hp = specs.get('actual_hp_2stage_h', 3.0) + specs.get('actual_hp_2stage_l', 2.0)
                     actual_rated_power = specs.get('actual_rated_power_2stage_h', 2.0) + specs.get('actual_rated_power_2stage_l', 1.5)
 
-            load_factor_ramp = required_hp_ramp / actual_hp if actual_hp > 0 else 0
-            estimated_power_ramp_kw = actual_rated_power * load_factor_ramp
-            load_factor_soak = required_hp_soak / actual_hp if actual_hp > 0 else 0
-            estimated_power_soak_kw = actual_rated_power * load_factor_soak
+            # Ramp 최소 부하율 적용
+            min_load_power_ramp_kw = actual_rated_power * (min_soak_load_factor / 100.0)
+            theoretical_power_ramp_kw = actual_rated_power * (required_hp_ramp / actual_hp) if actual_hp > 0 else 0
+            final_estimated_power_ramp_kw = max(min_load_power_ramp_kw, theoretical_power_ramp_kw)
             
-            total_consumption_ramp_kw = estimated_power_ramp_kw + fan_motor_load
-            total_consumption_soak_kw = estimated_power_soak_kw + (fan_motor_load * (fan_soak_factor / 100.0))
+            # Soak 최소 부하율 적용
+            min_load_power_soak_kw = actual_rated_power * (min_soak_load_factor / 100.0)
+            theoretical_power_soak_kw = actual_rated_power * (required_hp_soak / actual_hp) if actual_hp > 0 else 0
+            final_estimated_power_soak_kw = max(min_load_power_soak_kw, theoretical_power_soak_kw)
+
+            total_consumption_ramp_kw = final_estimated_power_ramp_kw + fan_motor_load
+            total_consumption_soak_kw = final_estimated_power_soak_kw + (fan_motor_load * (fan_soak_factor / 100.0))
 
         return {"power_ramp_kw": total_consumption_ramp_kw, "power_soak_kw": total_consumption_soak_kw}
 
@@ -126,6 +136,8 @@ st.number_input("초기 챔버 실내 온도 (°C)", key='initial_temp')
 st.subheader("온도 프로파일 구성 테이블")
 
 chamber_specs = st.session_state.get("chamber_specs", {})
+with st.expander("🔍 'B 페이지'에서 불러온 데이터 확인 (디버깅용)"):
+    st.json(chamber_specs)
 
 min_temp_limit = chamber_specs.get('min_temp_spec', -100.0)
 max_temp_limit = chamber_specs.get('max_temp_spec', 200.0)
@@ -183,7 +195,6 @@ if st.button("⚙️ 프로파일 계산 실행"):
                 specs_for_step = chamber_specs_original.copy()
                 specs_for_step['target_temp'] = target_temp_step
                 
-                # 'outside_temp'는 B페이지의 고정된 값을 계속 사용
                 specs_for_step['outside_temp'] = chamber_specs_original.get('outside_temp', 25.0)
 
                 # Ramp 구간 계산
@@ -192,7 +203,6 @@ if st.button("⚙️ 프로파일 계산 실행"):
                     ramp_rate = chamber_specs_original.get('ramp_rate', 1.0)
                     ramp_time = (delta_t / ramp_rate) / 60.0 if ramp_rate > 0 else 0
                     
-                    # Ramp 구간의 평균 온도를 계산하여 전력 계산
                     avg_ramp_temp = (current_temp + target_temp_step) / 2
                     specs_for_ramp = specs_for_step.copy()
                     specs_for_ramp['target_temp'] = avg_ramp_temp
