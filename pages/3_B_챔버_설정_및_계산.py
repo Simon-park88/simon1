@@ -26,6 +26,7 @@ def initialize_chamber_specs():
         'actual_rated_power_2stage_h': 2.0, 'actual_rated_power_2stage_l': 1.5,
         'heater_capacity': 5.0,
         'cooling_type': '공냉식', 'cooling_water_delta_t': 5.0,
+        'cooling_water_supply_temp': 15.0,
         'safety_factor': 1.5
     }
     for key, value in defaults.items():
@@ -48,6 +49,8 @@ DENSITY_SUS = 7930
 COP_TABLE_1STAGE = {10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -25: 1.2}
 COP_TABLE_2STAGE = {-20: 2.5, -30: 2.0, -40: 1.5, -50: 1.1, -60: 0.8, -70: 0.5}
 WATT_TO_KCAL_H = 0.86
+COOLING_TEMP_CORRECTION_FACTORS = {7: 0.9, 15: 1.0, 25: 1.15, 30: 1.25}
+
 
 # --- 3. UI 구성 ---
 st.subheader("1. 챔버 사양")
@@ -75,7 +78,6 @@ c1, c2 = st.columns(2)
 c1.number_input("팬/모터 정격 부하 (kW)", key='fan_motor_load', format="%.2f", help="챔버 크기를 변경하면 자동 추천값이 업데이트됩니다.")
 c2.slider("온도 유지 시 팬/모터 부하율 (%)", 0, 100, key='fan_soak_factor')
 
-# ★★★★★ UI 명칭 변경 ★★★★★
 st.slider(
     "최소 구동 부하율 (%)", 0, 100,
     key='min_soak_load_factor',
@@ -112,10 +114,11 @@ elif st.session_state.refrigeration_system == '2원 냉동':
     c4.number_input("2단(저온측) 정격 전력 (kW)", min_value=0.0, step=0.1, key='actual_rated_power_2stage_l')
 
 st.subheader("6. 냉각 방식")
-c1, c2 = st.columns(2)
+c1, c2, c3 = st.columns(3)
 c1.selectbox("냉각 방식", options=['공냉식', '수냉식'], key='cooling_type')
 if st.session_state.cooling_type == '수냉식':
-    c2.number_input("냉각수 설계 온도차 (ΔT, °C)", min_value=0.1, step=0.1, format="%.1f", key='cooling_water_delta_t')
+    c2.number_input("공급 냉각수 기준 온도 (°C)", min_value=0.1, step=0.1, format="%.1f", key='cooling_water_supply_temp', help="공급되는 냉각수(PCW)의 온도는 냉동기 효율에 영향을 줍니다.")
+    c3.number_input("냉각수 설계 온도차 (ΔT, °C)", min_value=0.1, step=0.1, format="%.1f", key='cooling_water_delta_t')
 
 st.markdown("---")
 
@@ -149,7 +152,6 @@ is_heating = specs.target_temp > specs.outside_temp
 if is_heating:
     operating_system = "히터 (가열 중)"
     
-    # Ramp
     internal_gains_ramp = fan_motor_load_w_ramp + internal_product_load_w
     theoretical_heater_power_ramp_w = max(0, conduction_load_abs + ramp_load_w - internal_gains_ramp)
     min_heater_power_ramp_kw = specs.heater_capacity * (specs.min_soak_load_factor / 100.0)
@@ -159,19 +161,15 @@ if is_heating:
     total_consumption_ramp_kw = (final_heater_power_ramp_w / 1000) + specs.fan_motor_load
     energy_ramp_kwh = total_consumption_ramp_kw * target_ramp_time_h if target_ramp_time_h != float('inf') else float('inf')
 
-    # Soak
     internal_gains_soak = fan_motor_load_w_soak + internal_product_load_w
     theoretical_heater_power_soak_w = max(0, conduction_load_abs - internal_gains_soak)
     min_heater_power_soak_kw = specs.heater_capacity * (specs.min_soak_load_factor / 100.0)
     final_heater_power_soak_w = max(theoretical_heater_power_soak_w, min_heater_power_soak_kw * 1000)
     total_consumption_soak_kw = (final_heater_power_soak_w / 1000) + (specs.fan_motor_load * (specs.fan_soak_factor / 100.0))
     
-    # 변수 선언
     required_heater_power_ramp_w = theoretical_heater_power_ramp_w
     required_heater_power_soak_w = theoretical_heater_power_soak_w
-    load_factor_ramp = 0.0; load_factor_soak = 0.0
-    total_heat_load_ramp = 0.0; total_heat_load_soak = 0.0
-    required_hp_ramp = 0.0; required_hp_soak = 0.0
+    load_factor_ramp, load_factor_soak, total_heat_load_ramp, total_heat_load_soak, required_hp_ramp, required_hp_soak = (0.0,) * 6
 
 else:
     if specs.target_temp > -25:
@@ -198,13 +196,11 @@ else:
         else:
             actual_hp = specs.actual_hp_2stage_h + specs.actual_hp_2stage_l; actual_rated_power = specs.actual_rated_power_2stage_h + specs.actual_rated_power_2stage_l
 
-    # Ramp 최소 부하율 적용
     min_load_power_ramp_kw = actual_rated_power * (specs.min_soak_load_factor / 100.0)
     theoretical_power_ramp_kw = actual_rated_power * (required_hp_ramp / actual_hp) if actual_hp > 0 else 0
     final_estimated_power_ramp_kw = max(min_load_power_ramp_kw, theoretical_power_ramp_kw)
     load_factor_ramp = final_estimated_power_ramp_kw / actual_rated_power if actual_rated_power > 0 else 0
     
-    # Soak 최소 부하율 적용
     min_load_power_soak_kw = actual_rated_power * (specs.min_soak_load_factor / 100.0)
     theoretical_power_soak_kw = actual_rated_power * (required_hp_soak / actual_hp) if actual_hp > 0 else 0
     final_estimated_power_soak_kw = max(min_load_power_soak_kw, theoretical_power_soak_kw)
@@ -213,7 +209,8 @@ else:
     total_consumption_ramp_kw = final_estimated_power_ramp_kw + specs.fan_motor_load
     total_consumption_soak_kw = final_estimated_power_soak_kw + (specs.fan_motor_load * (specs.fan_soak_factor / 100.0))
     
-    required_heater_power_ramp_w = 0.0; required_heater_power_soak_w = 0.0
+    required_heater_power_ramp_w, required_heater_power_soak_w = 0.0, 0.0
+    target_ramp_time_h, energy_ramp_kwh = float('inf'), float('inf')
 
 # --- 5. 결과 표시 ---
 st.markdown("---")
@@ -253,25 +250,37 @@ st.markdown("---")
 st.subheader("❄️ 냉각 시스템 요구 사양")
 total_heat_to_reject_ramp = total_heat_load_ramp + (total_consumption_ramp_kw * 1000) if not is_heating else 0
 total_heat_to_reject_soak = total_heat_load_soak + (total_consumption_soak_kw * 1000) if not is_heating else 0
+
+correction_temps = sorted(COOLING_TEMP_CORRECTION_FACTORS.keys())
+correction_factors = [COOLING_TEMP_CORRECTION_FACTORS[t] for t in correction_temps]
+water_temp_correction_factor = np.interp(specs.cooling_water_supply_temp, correction_temps, correction_factors)
+
+adjusted_heat_reject_ramp_w = total_heat_to_reject_ramp * water_temp_correction_factor
+adjusted_heat_reject_soak_w = total_heat_to_reject_soak * water_temp_correction_factor
+
 c1, c2 = st.columns(2)
 with c1:
     st.markdown("##### 🌡️ 온도 변화 시")
     if specs.cooling_type == '공냉식':
         st.metric("총 발열량", f"{total_heat_to_reject_ramp / 1000:.2f} kW", help=f"({(total_heat_to_reject_ramp * WATT_TO_KCAL_H):,.0f} kcal/h)")
     elif specs.cooling_type == '수냉식':
-        required_flow_rate = (total_heat_to_reject_ramp / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
-        st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM")
+        required_flow_rate = (adjusted_heat_reject_ramp_w / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
+        st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM", 
+                  help=f"냉각수 온도({specs.cooling_water_supply_temp}°C) 보정계수({water_temp_correction_factor:.2f}) 적용됨")
+
 with c2:
     st.markdown("##### 💧 온도 유지 시")
     if specs.cooling_type == '공냉식':
         st.metric("총 발열량", f"{total_heat_to_reject_soak / 1000:.2f} kW", help=f"({(total_heat_to_reject_soak * WATT_TO_KCAL_H):,.0f} kcal/h)")
     elif specs.cooling_type == '수냉식':
-        required_flow_rate = (total_heat_to_reject_soak / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
-        st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM")
+        required_flow_rate = (adjusted_heat_reject_soak_w / (4186 * specs.cooling_water_delta_t)) * 60 if specs.cooling_water_delta_t > 0 else 0
+        st.metric("필요 냉각수 유량", f"{required_flow_rate:.2f} LPM",
+                  help=f"냉각수 온도({specs.cooling_water_supply_temp}°C) 보정계수({water_temp_correction_factor:.2f}) 적용됨")
 
-# --- 7. 설정값 저장 버튼 ---
+# --- 7. 설정값 저장 버튼 (수정된 부분) ---
 if st.button("저장하기"):
     st.session_state["chamber_specs"] = {
+        # ... (기본 사양들은 그대로 저장) ...
         "chamber_w": specs.chamber_w, "chamber_d": specs.chamber_d, "chamber_h": specs.chamber_h,
         "insulation_type": specs.insulation_type, "insulation_thickness": specs.insulation_thickness,
         "sus_thickness": specs.sus_thickness, "target_temp": specs.target_temp,
@@ -285,8 +294,10 @@ if st.button("저장하기"):
         "min_temp_spec": specs.min_temp_spec, "max_temp_spec": specs.max_temp_spec,
         "heater_capacity": specs.heater_capacity, "cooling_type": specs.cooling_type,
         "cooling_water_delta_t": specs.cooling_water_delta_t,
+        "cooling_water_supply_temp": specs.cooling_water_supply_temp,
         
-        "U_value": U_value, "surface_area": A, "chamber_volume": volume_m3,
+        # ★★★★★ 수정된 부분: 계산된 최종 결과값을 저장 ★★★★★
+        "total_heat_to_reject_w": adjusted_heat_reject_ramp_w if specs.cooling_type == '수냉식' else total_heat_to_reject_ramp
     }
     st.success("챔버 사양이 저장되었습니다 ✅ (다른 페이지에서 불러올 수 있습니다)")
 

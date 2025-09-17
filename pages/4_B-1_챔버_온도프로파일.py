@@ -16,7 +16,6 @@ DENSITY_SUS = 7930
 COP_TABLE_1STAGE = {10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -25: 1.2}
 COP_TABLE_2STAGE = {-20: 2.5, -30: 2.0, -40: 1.5, -50: 1.1, -60: 0.8, -70: 0.5}
 
-# ★★★★★ 수정된 계산 함수 시작 ★★★★★
 def calculate_chamber_power(specs):
     """
     주어진 사양(specs)으로 가열/냉각 모드를 자동 판단하고,
@@ -59,14 +58,12 @@ def calculate_chamber_power(specs):
 
         if is_heating:
             # --- 가열 모드 ---
-            # Ramp
             internal_gains_ramp = fan_motor_load_w_ramp + internal_product_load_w
             theoretical_heater_power_ramp_w = max(0, conduction_load_abs + ramp_load_w - internal_gains_ramp)
             min_heater_power_ramp_kw = heater_capacity * (min_soak_load_factor / 100.0)
             final_heater_power_ramp_w = max(theoretical_heater_power_ramp_w, min_heater_power_ramp_kw * 1000)
             total_consumption_ramp_kw = (final_heater_power_ramp_w / 1000) + fan_motor_load
 
-            # Soak
             internal_gains_soak = fan_motor_load_w_soak + internal_product_load_w
             theoretical_heater_power_soak_w = max(0, conduction_load_abs - internal_gains_soak)
             min_heater_power_soak_kw = heater_capacity * (min_soak_load_factor / 100.0)
@@ -100,12 +97,10 @@ def calculate_chamber_power(specs):
                     actual_hp = specs.get('actual_hp_2stage_h', 3.0) + specs.get('actual_hp_2stage_l', 2.0)
                     actual_rated_power = specs.get('actual_rated_power_2stage_h', 2.0) + specs.get('actual_rated_power_2stage_l', 1.5)
 
-            # Ramp 최소 부하율 적용
             min_load_power_ramp_kw = actual_rated_power * (min_soak_load_factor / 100.0)
             theoretical_power_ramp_kw = actual_rated_power * (required_hp_ramp / actual_hp) if actual_hp > 0 else 0
             final_estimated_power_ramp_kw = max(min_load_power_ramp_kw, theoretical_power_ramp_kw)
             
-            # Soak 최소 부하율 적용
             min_load_power_soak_kw = actual_rated_power * (min_soak_load_factor / 100.0)
             theoretical_power_soak_kw = actual_rated_power * (required_hp_soak / actual_hp) if actual_hp > 0 else 0
             final_estimated_power_soak_kw = max(min_load_power_soak_kw, theoretical_power_soak_kw)
@@ -117,8 +112,6 @@ def calculate_chamber_power(specs):
 
     except Exception:
         return {"power_ramp_kw": 0, "power_soak_kw": 0}
-# ★★★★★ 수정된 계산 함수 끝 ★★★★★
-
 
 # --- 2. st.session_state 초기화 ---
 if 'profile_df' not in st.session_state:
@@ -126,12 +119,28 @@ if 'profile_df' not in st.session_state:
         [{"목표 온도 (°C)": 25.0, "유지 시간 (H)": 1.0}],
         columns=["목표 온도 (°C)", "유지 시간 (H)"]
     )
-if 'initial_temp' not in st.session_state:
-    st.session_state.initial_temp = 25.0
+defaults = {
+    'initial_temp': 25.0,
+    'chamber_count': 1,
+    'profile_reps': 1
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 # --- 3. 온도 프로파일 입력 UI ---
 st.subheader("초기 조건 설정")
 st.number_input("초기 챔버 실내 온도 (°C)", key='initial_temp')
+
+# ★★★★★ 테스트 옵션 UI 추가 ★★★★★
+st.subheader("테스트 옵션")
+col1, col2 = st.columns(2)
+with col1:
+    st.number_input("챔버 ROOM 개수", min_value=1, step=1, key='chamber_count')
+with col2:
+    st.number_input("프로파일 반복 횟수", min_value=1, step=1, key='profile_reps')
+# ★★★★★ UI 추가 끝 ★★★★★
+
 
 st.subheader("온도 프로파일 구성 테이블")
 
@@ -155,16 +164,11 @@ edited_df = st.data_editor(
     st.session_state.profile_df,
     column_config={
         "목표 온도 (°C)": st.column_config.NumberColumn(
-            "목표 온도 (°C)",
-            min_value=min_temp_limit,
-            max_value=max_temp_limit,
-            format="%.1f",
-            required=True
+            "목표 온도 (°C)", min_value=min_temp_limit, max_value=max_temp_limit,
+            format="%.1f", required=True
         ),
         "유지 시간 (H)": st.column_config.NumberColumn(
-            "유지 시간 (H)",
-            help="'Soak' 상태일 때의 유지 시간을 입력합니다.",
-            format="%.2f"
+            "유지 시간 (H)", help="'Soak' 상태일 때의 유지 시간을 입력합니다.", format="%.2f"
         ),
     },
     num_rows="dynamic",
@@ -180,12 +184,19 @@ if st.button("⚙️ 프로파일 계산 실행"):
         try:
             chamber_specs_original = st.session_state["chamber_specs"].copy()
             
+            # ★★★★★ 반복 횟수 적용 ★★★★★
+            reps = st.session_state.profile_reps
+            if not edited_df.empty:
+                profile_to_calc = pd.concat([edited_df.copy()] * reps, ignore_index=True)
+            else:
+                profile_to_calc = edited_df.copy()
+            
             results = []
             total_time = 0.0
-            total_kwh = 0.0
+            total_kwh_single_chamber = 0.0
             current_temp = st.session_state.initial_temp
             
-            for index, row in edited_df.iterrows():
+            for index, row in profile_to_calc.iterrows():
                 target_temp_step = row['목표 온도 (°C)']
                 soak_time = row['유지 시간 (H)']
                 
@@ -194,7 +205,6 @@ if st.button("⚙️ 프로파일 계산 실행"):
 
                 specs_for_step = chamber_specs_original.copy()
                 specs_for_step['target_temp'] = target_temp_step
-                
                 specs_for_step['outside_temp'] = chamber_specs_original.get('outside_temp', 25.0)
 
                 # Ramp 구간 계산
@@ -212,8 +222,8 @@ if st.button("⚙️ 프로파일 계산 실행"):
                     
                     ramp_kwh = power_ramp_kw * ramp_time
                     total_time += ramp_time
-                    total_kwh += ramp_kwh
-                    results.append([f"{index + 1}-Ramp", f"{current_temp:.1f} → {target_temp_step:.1f}", f"{ramp_time:.2f}", f"{ramp_kwh:.2f}"])
+                    total_kwh_single_chamber += ramp_kwh
+                    results.append([f"반복 {index // len(edited_df) + 1} - 스텝 {index % len(edited_df) + 1} Ramp", f"{current_temp:.1f} → {target_temp_step:.1f}", f"{ramp_time:.2f}", f"{ramp_kwh:.2f}"])
                     current_temp = target_temp_step
 
                 # Soak 구간 계산
@@ -222,11 +232,13 @@ if st.button("⚙️ 프로파일 계산 실행"):
                     power_soak_kw = power_values['power_soak_kw']
                     soak_kwh = power_soak_kw * soak_time
                     total_time += soak_time
-                    total_kwh += soak_kwh
-                    results.append([f"{index + 1}-Soak", f"{current_temp:.1f} 유지", f"{soak_time:.2f}", f"{soak_kwh:.2f}"])
+                    total_kwh_single_chamber += soak_kwh
+                    results.append([f"반복 {index // len(edited_df) + 1} - 스텝 {index % len(edited_df) + 1} Soak", f"{current_temp:.1f} 유지", f"{soak_time:.2f}", f"{soak_kwh:.2f}"])
             
-            st.session_state.chamber_profile_kwh = total_kwh
+            # ★★★★★ 최종 결과 저장 ★★★★★
             st.session_state.chamber_profile_time = total_time
+            st.session_state.single_chamber_kwh = total_kwh_single_chamber
+            st.session_state.total_kwh_all_chambers = total_kwh_single_chamber * st.session_state.chamber_count
             st.session_state.profile_results = results
             st.success("프로파일 계산이 완료되었습니다!")
 
@@ -244,9 +256,14 @@ if 'profile_results' in st.session_state and st.session_state.profile_results:
         result_df = pd.DataFrame(results, columns=["구간", "내용", "소요 시간(H)", "소비 전력량(kWh)"])
         st.dataframe(result_df)
     
-    col1, col2 = st.columns(2)
+    # ★★★★★ 수정된 결과 요약 UI ★★★★★
+    st.info(f"계산 기준: 챔버 {st.session_state.chamber_count}대, 프로파일 {st.session_state.profile_reps}회 반복")
+    
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("프로파일 총 소요 시간 (H)", f"{st.session_state.get('chamber_profile_time', 0):.2f}")
     with col2:
-        st.metric("챔버 총 소비 전력량 (kWh)", f"{st.session_state.get('chamber_profile_kwh', 0):.2f}")
+        st.metric("챔버 1ROOM 총 전력량 (kWh)", f"{st.session_state.get('single_chamber_kwh', 0):.2f}")
+    with col3:
+        st.metric(f"챔버 {st.session_state.chamber_count}ROOM 총 전력량 (kWh)", f"{st.session_state.get('total_kwh_all_chambers', 0):.2f}")
 
