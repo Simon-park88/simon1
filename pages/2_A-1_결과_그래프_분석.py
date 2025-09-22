@@ -29,18 +29,13 @@ plt.rc('axes', unicode_minus=False)
 
 
 # --- 1. 효율 데이터 테이블 및 계산 함수 정의 (계산기와 동일) ---
-
-# == 물리 상수 ==
+#<editor-fold desc="효율 계산 함수">
 COPPER_RESISTIVITY = 1.72e-8
-
-# == (기준 모델) 300A 장비 충전 데이터 ==
 charge_currents = np.array([10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300])
 charge_voltages = np.array([3.3, 4.2, 5.0])
 charge_eff_3_3V = np.array([48.62, 63.88, 71.01, 75.43, 78.54, 80.64, 81.90, 82.71, 83.32, 83.78, 84.07, 84.25, 84.25, 84.09, 83.95, 83.75, 83.63, 83.48, 83.33, 83.11, 82.81, 82.49, 82.17, 81.83, 81.51, 81.16, 80.78, 80.38, 79.99, 79.56]) / 100.0
 charge_eff_4_2V = np.array([49.46, 64.42, 72.12, 76.76, 79.58, 81.46, 82.81, 83.85, 84.56, 84.90, 85.15, 85.37, 85.44, 85.49, 85.38, 85.25, 85.15, 85.02, 84.89, 84.71, 84.50, 84.28, 83.99, 83.70, 83.40, 83.09, 82.76, 82.42, 82.06, 81.68]) / 100.0
 charge_eff_5_0V = np.array([53.24, 67.85, 75.24, 79.30, 81.82, 83.63, 84.88, 85.71, 86.15, 86.55, 86.82, 87.01, 86.99, 86.95, 86.83, 86.75, 86.68, 86.56, 86.36, 86.18, 85.94, 85.73, 85.48, 85.22, 84.94, 84.64, 84.32, 84.00, 83.65, 83.31]) / 100.0
-
-# == (기준 모델) 300A 장비 방전 데이터 ==
 discharge_currents = np.array([10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300])
 discharge_voltages = np.array([3.3, 4.2, 5.0])
 discharge_eff_3_3V = np.array([-16.20, 39.95, 56.71, 65.99, 70.81, 74.11, 76.21, 77.63, 78.69, 79.58, 80.14, 80.52, 80.77, 80.78, 80.75, 80.58, 80.47, 79.42, 79.99, 79.68, 79.31, 78.93, 78.55, 78.13, 77.62, 77.10, 76.61, 76.05, 75.40, 74.87]) / 100.0
@@ -76,12 +71,9 @@ def get_efficiency(mode, voltage, current, equipment_spec, cable_length_m, cable
     voltage_clipped = np.clip(voltage, 3.3, 5.0)
     current_clipped = np.clip(equivalent_current, 10, 300)
 
-    if mode == 'Charge':
-        points, values = charge_points, charge_values
-    elif mode == 'Discharge':
-        points, values = discharge_points, discharge_values
-    else:
-        return 1.0
+    if mode == 'Charge': points, values = charge_points, charge_values
+    elif mode == 'Discharge': points, values = discharge_points, discharge_values
+    else: return 1.0
 
     eta_table = griddata(points, values, (current_clipped, voltage_clipped), method='linear')
     if np.isnan(eta_table):
@@ -97,10 +89,13 @@ def get_efficiency(mode, voltage, current, equipment_spec, cable_length_m, cable
             eta_adjusted = eta_pure / (1 + (current * R_new) / voltage)
         else: # Discharge
             denominator = 1 - (equivalent_current * R_3m_150sq) / voltage
-            if denominator <= 0: return 0
+            if denominator <= 0: return -1.0
             eta_pure = eta_table / denominator
             eta_adjusted = eta_pure * (1 - (current * R_new) / voltage)
-    return np.clip(eta_adjusted, 0, 1.0)
+    
+    if mode == 'Charge': return np.clip(eta_adjusted, 0, 1.0)
+    else: return np.clip(eta_adjusted, -np.inf, 1.0)
+#</editor-fold>
 
 # --- 2. 계산 함수 (최신 로직으로 업데이트) ---
 def calculate_power_profile(input_df, specs):
@@ -136,7 +131,7 @@ def calculate_power_profile(input_df, specs):
 
         elif test_type == 'CCCV' and mode == 'Charge':
             details = cp_cccv_details.get(original_index, {})
-            if not details: continue # 상세 설정 없으면 스킵
+            if not details: continue
 
             cc_current = row['전류(A)']; avg_v_cc = row['전압(V)'] if pd.notna(row['전압(V)']) else 3.8
             cv_v = details.get('cv_v'); cutoff_a = details.get('cutoff_a'); transition_ratio = details.get('transition', 80.0) / 100.0
@@ -235,9 +230,12 @@ def calculate_power_profile(input_df, specs):
                     p_partial = (p_in_w * rem_ch) + standby_power if rem_ch > 0 else 0
                     total_power_kw = (p_full_total + p_partial) / 1000.0
                 else: # Discharge
-                    p_rec_w = voltage * current * efficiency; total_rec_w = p_rec_w * test_channels
+                    # ★★★★★ 수정된 부분: 대기전력을 고려한 방전 전력 계산 ★★★★★
+                    p_rec_w = voltage * current * efficiency
+                    total_rec_w = p_rec_w * test_channels
                     total_standby_w = standby_power * required_equipment
-                    total_power_kw = (total_standby_w - total_rec_w) / 1000.0
+                    total_power_w = total_standby_w - total_rec_w
+                    total_power_kw = total_power_w / 1000.0
                 
                 kwh = total_power_kw * actual_time
                 calculated_df.loc[index, ['C-rate', '효율(%)', '실제 테스트 시간(H)', '누적 충전량(Ah)', 'SoC(%)', '전력(kW)', '전력량(kWh)']] = \
@@ -285,7 +283,6 @@ else:
             if recipe_df is not None and not recipe_df.empty:
                 recipe_to_calc = pd.concat([recipe_df.copy()] * individual_repetition_count, ignore_index=True)
                 
-                # 계산 시 저장된 개별 사양을 모두 전달
                 result_df = calculate_power_profile(recipe_to_calc, saved_data)
                 
                 single_run_profile = result_df[['실제 테스트 시간(H)', '전력(kW)']].values.tolist()
@@ -306,7 +303,7 @@ else:
                     power_values.append(step_power)
                     all_time_points.add(current_time)
                     
-                individual_peaks[name] = max(power_values) if power_values else 0
+                individual_peaks[name] = max(p for p in power_values if p >= 0) if any(p >= 0 for p in power_values) else 0
                 all_recipe_coords.append({'name': name, 'times': time_points, 'powers': power_values})
                 ax.plot(time_points, power_values, linestyle='--', alpha=0.4, label=f"{name} ({individual_repetition_count}회 반복)")
 
@@ -361,7 +358,7 @@ else:
             if power_combined:
                 st.markdown("---")
                 st.subheader("종합 전력 분석 결과")
-                overall_peak_power = max(power_combined)
+                overall_peak_power = max(p for p in power_combined if p >= 0) if any(p >= 0 for p in power_combined) else 0
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric("전체 기간 최대 피크 (kW)", f"{overall_peak_power:.2f}")

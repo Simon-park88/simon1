@@ -6,11 +6,9 @@ import math
 # --- 0. 기본 설정 ---
 st.set_page_config(layout="wide")
 st.title("🌡️ 챔버 온도 프로파일 계산기")
-st.info("이 페이지의 계산 결과는 'B_챔버 설정 및 계산' 페이지의 사양을 기반으로 합니다.")
-
+st.info("이 페이지의 계산 결과는 'B_챔버 설정 및 계산' 페이지에서 선택한 사양을 기반으로 합니다.")
 
 # --- 1. 필요한 모든 데이터와 계산 함수를 이 파일에 직접 정의 ---
-
 K_VALUES = {"우레탄폼": 0.023, "글라스울": 0.040, "세라크울": 0.150}
 DENSITY_SUS = 7930
 COP_TABLE_1STAGE = {10: 4.0, 0: 3.0, -10: 2.2, -20: 1.5, -25: 1.2}
@@ -113,52 +111,120 @@ def calculate_chamber_power(specs):
     except Exception:
         return {"power_ramp_kw": 0, "power_soak_kw": 0}
 
-# --- 2. st.session_state 초기화 ---
+# --- 2. st.session_state 초기화 및 콜백 함수 ---
 if 'profile_df' not in st.session_state:
     st.session_state.profile_df = pd.DataFrame(
         [{"목표 온도 (°C)": 25.0, "유지 시간 (H)": 1.0}],
         columns=["목표 온도 (°C)", "유지 시간 (H)"]
     )
+if 'saved_chamber_profiles' not in st.session_state:
+    st.session_state.saved_chamber_profiles = {}
+    
 defaults = {
     'initial_temp': 25.0,
     'chamber_count': 1,
-    'profile_reps': 1
+    'profile_reps': 1,
+    'selected_spec_for_profile': None,
+    'profile_to_load': "선택하세요" 
 }
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# --- 3. 온도 프로파일 입력 UI ---
-st.subheader("초기 조건 설정")
-st.number_input("초기 챔버 실내 온도 (°C)", key='initial_temp')
+def load_chamber_profile_callback():
+    """선택된 프로파일을 session_state로 불러오는 콜백 함수"""
+    profile_name = st.session_state.profile_to_load
+    if profile_name != "선택하세요" and profile_name in st.session_state.saved_chamber_profiles:
+        loaded_data = st.session_state.saved_chamber_profiles[profile_name]
+        
+        st.session_state.initial_temp = loaded_data.get('initial_temp', 25.0)
+        st.session_state.chamber_count = loaded_data.get('chamber_count', 1)
+        st.session_state.profile_reps = loaded_data.get('profile_reps', 1)
+        st.session_state.selected_spec_for_profile = loaded_data.get('source_chamber_spec', None)
+        
+        if 'profile_df' in loaded_data and isinstance(loaded_data['profile_df'], list):
+            st.session_state.profile_df = pd.DataFrame(loaded_data['profile_df'])
+        
+        st.success(f"'{profile_name}' 프로파일을 성공적으로 불러왔습니다!")
 
-# ★★★★★ 테스트 옵션 UI 추가 ★★★★★
-st.subheader("테스트 옵션")
-col1, col2 = st.columns(2)
+# ★★★★★ 추가: 저장된 프로파일 삭제 콜백 함수 ★★★★★
+def delete_chamber_profile_callback():
+    """선택된 프로파일을 삭제하는 콜백 함수"""
+    profile_to_delete = st.session_state.profile_to_load
+    if profile_to_delete != "선택하세요" and profile_to_delete in st.session_state.saved_chamber_profiles:
+        del st.session_state.saved_chamber_profiles[profile_to_delete]
+        st.session_state.profile_to_load = "선택하세요" # selectbox 상태 리셋
+        st.success(f"'{profile_to_delete}' 프로파일을 삭제했습니다.")
+    else:
+        st.warning("삭제할 프로파일을 먼저 선택해주세요.")
+
+
+# --- 3. UI 구성 ---
+with st.expander("📂 저장된 프로파일 관리", expanded=True):
+    if not st.session_state.saved_chamber_profiles:
+        st.info("저장된 프로파일이 없습니다.")
+    else:
+        col_load1, col_load2, col_load3 = st.columns([0.6, 0.2, 0.2])
+        with col_load1:
+            st.selectbox("관리할 프로파일을 선택하세요", 
+                         options=["선택하세요"] + list(st.session_state.saved_chamber_profiles.keys()), 
+                         key="profile_to_load")
+        with col_load2:
+            st.button("📥 선택한 프로파일 불러오기", on_click=load_chamber_profile_callback, use_container_width=True)
+        with col_load3:
+            # ★★★★★ 수정: 삭제 버튼에 콜백 함수 연결 ★★★★★
+            st.button("⚠️ 선택한 프로파일 삭제", on_click=delete_chamber_profile_callback, use_container_width=True)
+
+st.markdown("---")
+
+
+st.subheader("1. 계산 기반 챔버 사양 선택")
+saved_chamber_specs = st.session_state.get('saved_chamber_specs', {})
+
+if not saved_chamber_specs:
+    st.error("⚠️ 먼저 'B_챔버 설정 및 계산' 페이지에서 챔버 사양을 저장해주세요. 페이지를 새로고침하여 다시 시도할 수 있습니다.")
+    st.stop()
+
+spec_options = list(saved_chamber_specs.keys())
+try:
+    current_index = spec_options.index(st.session_state.selected_spec_for_profile)
+except (ValueError, TypeError):
+    current_index = 0
+
+st.selectbox(
+    "계산에 사용할 챔버 사양을 선택하세요.",
+    options=spec_options,
+    key='selected_spec_for_profile',
+    index=current_index
+)
+
+# --- 4. 온도 프로파일 입력 UI ---
+st.subheader("2. 초기 조건 및 테스트 옵션")
+col1, col2, col3 = st.columns(3)
 with col1:
-    st.number_input("챔버 ROOM 개수", min_value=1, step=1, key='chamber_count')
+    st.number_input("초기 챔버 실내 온도 (°C)", key='initial_temp')
 with col2:
+    st.number_input("챔버 ROOM 개수", min_value=1, step=1, key='chamber_count')
+with col3:
     st.number_input("프로파일 반복 횟수", min_value=1, step=1, key='profile_reps')
-# ★★★★★ UI 추가 끝 ★★★★★
 
 
-st.subheader("온도 프로파일 구성 테이블")
+st.subheader("3. 온도 프로파일 구성 테이블")
 
-chamber_specs = st.session_state.get("chamber_specs", {})
-with st.expander("🔍 'B 페이지'에서 불러온 데이터 확인 (디버깅용)"):
-    st.json(chamber_specs)
+selected_spec_name = st.session_state.selected_spec_for_profile
+chamber_specs_for_profile = saved_chamber_specs.get(selected_spec_name, {})
 
-min_temp_limit = chamber_specs.get('min_temp_spec', -100.0)
-max_temp_limit = chamber_specs.get('max_temp_spec', 200.0)
+with st.expander("🔍 현재 적용된 챔버 사양 데이터 확인 (디버깅용)"):
+    st.json(chamber_specs_for_profile)
 
-st.info(f"입력 가능한 온도 범위: **{min_temp_limit}°C ~ {max_temp_limit}°C** (챔버 사양 기준)")
+min_temp_limit = chamber_specs_for_profile.get('min_temp_spec', -100.0)
+max_temp_limit = chamber_specs_for_profile.get('max_temp_spec', 200.0)
+
+st.info(f"입력 가능한 온도 범위: **{min_temp_limit}°C ~ {max_temp_limit}°C** ('{selected_spec_name}' 사양 기준)")
 
 if st.button("➕ 스텝 추가"):
     new_step = pd.DataFrame([{"목표 온도 (°C)": 25.0, "유지 시간 (H)": 1.0}])
     st.session_state.profile_df = pd.concat([st.session_state.profile_df, new_step], ignore_index=True)
-    st.rerun()
-
-st.session_state.profile_df['목표 온도 (°C)'] = st.session_state.profile_df['목표 온도 (°C)'].fillna(25.0)
 
 edited_df = st.data_editor(
     st.session_state.profile_df,
@@ -168,49 +234,49 @@ edited_df = st.data_editor(
             format="%.1f", required=True
         ),
         "유지 시간 (H)": st.column_config.NumberColumn(
-            "유지 시간 (H)", help="'Soak' 상태일 때의 유지 시간을 입력합니다.", format="%.2f"
+            "유지 시간 (H)", help="'Soak' 상태일 때의 유지 시간을 입력합니다.", format="%.2f", required=True
         ),
     },
     num_rows="dynamic",
-    hide_index=True
+    hide_index=True,
+    key="profile_editor"
 )
-st.session_state.profile_df = edited_df
 
-# --- 4. 자동 계산 로직 ---
+# --- 5. 자동 계산 로직 ---
 if st.button("⚙️ 프로파일 계산 실행"):
-    if "chamber_specs" not in st.session_state or not st.session_state["chamber_specs"]:
-        st.warning("⚠️ 먼저 'B_챔버 설정 및 계산' 페이지에서 챔버 사양을 저장해주세요.")
+    if not selected_spec_name or not chamber_specs_for_profile:
+        st.warning("⚠️ 계산에 사용할 챔버 사양을 먼저 선택하고 저장해주세요.")
     else:
         try:
-            chamber_specs_original = st.session_state["chamber_specs"].copy()
+            edited_df['목표 온도 (°C)'] = pd.to_numeric(edited_df['목표 온도 (°C)'], errors='coerce')
+            edited_df['유지 시간 (H)'] = pd.to_numeric(edited_df['유지 시간 (H)'], errors='coerce')
+            edited_df.dropna(subset=['목표 온도 (°C)', '유지 시간 (H)'], inplace=True)
+            st.session_state.profile_df = edited_df
             
-            # ★★★★★ 반복 횟수 적용 ★★★★★
             reps = st.session_state.profile_reps
             if not edited_df.empty:
                 profile_to_calc = pd.concat([edited_df.copy()] * reps, ignore_index=True)
             else:
-                profile_to_calc = edited_df.copy()
+                st.warning("계산할 프로파일 스텝을 1개 이상 입력해주세요.")
+                st.stop()
             
             results = []
             total_time = 0.0
             total_kwh_single_chamber = 0.0
             current_temp = st.session_state.initial_temp
+            has_ramp = False
             
             for index, row in profile_to_calc.iterrows():
                 target_temp_step = row['목표 온도 (°C)']
                 soak_time = row['유지 시간 (H)']
                 
-                if pd.isna(target_temp_step):
-                    continue
-
-                specs_for_step = chamber_specs_original.copy()
+                specs_for_step = chamber_specs_for_profile.copy()
                 specs_for_step['target_temp'] = target_temp_step
-                specs_for_step['outside_temp'] = chamber_specs_original.get('outside_temp', 25.0)
-
-                # Ramp 구간 계산
+                
                 if target_temp_step != current_temp:
+                    has_ramp = True
                     delta_t = abs(target_temp_step - current_temp)
-                    ramp_rate = chamber_specs_original.get('ramp_rate', 1.0)
+                    ramp_rate = chamber_specs_for_profile.get('ramp_rate', 1.0)
                     ramp_time = (delta_t / ramp_rate) / 60.0 if ramp_rate > 0 else 0
                     
                     avg_ramp_temp = (current_temp + target_temp_step) / 2
@@ -226,8 +292,7 @@ if st.button("⚙️ 프로파일 계산 실행"):
                     results.append([f"반복 {index // len(edited_df) + 1} - 스텝 {index % len(edited_df) + 1} Ramp", f"{current_temp:.1f} → {target_temp_step:.1f}", f"{ramp_time:.2f}", f"{ramp_kwh:.2f}"])
                     current_temp = target_temp_step
 
-                # Soak 구간 계산
-                if pd.notna(soak_time) and soak_time > 0:
+                if soak_time > 0:
                     power_values = calculate_chamber_power(specs_for_step)
                     power_soak_kw = power_values['power_soak_kw']
                     soak_kwh = power_soak_kw * soak_time
@@ -235,35 +300,59 @@ if st.button("⚙️ 프로파일 계산 실행"):
                     total_kwh_single_chamber += soak_kwh
                     results.append([f"반복 {index // len(edited_df) + 1} - 스텝 {index % len(edited_df) + 1} Soak", f"{current_temp:.1f} 유지", f"{soak_time:.2f}", f"{soak_kwh:.2f}"])
             
-            # ★★★★★ 최종 결과 저장 ★★★★★
-            st.session_state.chamber_profile_time = total_time
-            st.session_state.single_chamber_kwh = total_kwh_single_chamber
-            st.session_state.total_kwh_all_chambers = total_kwh_single_chamber * st.session_state.chamber_count
-            st.session_state.profile_results = results
+            if has_ramp:
+                peak_power_for_profile = chamber_specs_for_profile.get('total_consumption_ramp_kw', 0)
+            else:
+                peak_power_for_profile = chamber_specs_for_profile.get('total_consumption_soak_kw', 0)
+            
+            st.session_state.profile_results = {
+                "results_table": results,
+                "total_time": total_time,
+                "single_chamber_kwh": total_kwh_single_chamber,
+                "total_kwh_all_chambers": total_kwh_single_chamber * st.session_state.chamber_count,
+                "peak_power_kw": peak_power_for_profile * st.session_state.chamber_count
+            }
             st.success("프로파일 계산이 완료되었습니다!")
 
         except Exception as e:
             st.error(f"계산 중 오류가 발생했습니다: {e}")
             st.exception(e)
 
-# --- 5. 결과 표시 ---
+# --- 6. 결과 표시 ---
 st.markdown("---")
-st.subheader("프로파일 계산 결과")
+st.subheader("4. 프로파일 계산 결과")
 
 if 'profile_results' in st.session_state and st.session_state.profile_results:
-    results = st.session_state.profile_results
-    if results:
-        result_df = pd.DataFrame(results, columns=["구간", "내용", "소요 시간(H)", "소비 전력량(kWh)"])
-        st.dataframe(result_df)
+    res = st.session_state.profile_results
+    result_df = pd.DataFrame(res["results_table"], columns=["구간", "내용", "소요 시간(H)", "소비 전력량(kWh)"])
+    st.dataframe(result_df)
     
-    # ★★★★★ 수정된 결과 요약 UI ★★★★★
     st.info(f"계산 기준: 챔버 {st.session_state.chamber_count}대, 프로파일 {st.session_state.profile_reps}회 반복")
     
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("프로파일 총 소요 시간 (H)", f"{st.session_state.get('chamber_profile_time', 0):.2f}")
-    with col2:
-        st.metric("챔버 1ROOM 총 전력량 (kWh)", f"{st.session_state.get('single_chamber_kwh', 0):.2f}")
-    with col3:
-        st.metric(f"챔버 {st.session_state.chamber_count}ROOM 총 전력량 (kWh)", f"{st.session_state.get('total_kwh_all_chambers', 0):.2f}")
+    col1.metric("프로파일 총 소요 시간 (H)", f"{res.get('total_time', 0):.2f}")
+    col2.metric("챔버 1ROOM 총 전력량 (kWh)", f"{res.get('single_chamber_kwh', 0):.2f}")
+    col3.metric(f"챔버 {st.session_state.chamber_count}ROOM 총 전력량 (kWh)", f"{res.get('total_kwh_all_chambers', 0):.2f}")
+
+    # --- 7. 계산 결과 저장 ---
+    st.markdown("---")
+    with st.form("profile_save_form"):
+        profile_name = st.text_input("저장할 운영 프로파일 이름")
+        submitted = st.form_submit_button("💾 현재 운영 프로파일 저장하기")
+        if submitted:
+            if not profile_name:
+                st.warning("프로파일 이름을 입력해주세요.")
+            else:
+                data_to_save = {
+                    'source_chamber_spec': selected_spec_name,
+                    'chamber_count': st.session_state.chamber_count,
+                    'profile_reps': st.session_state.profile_reps,
+                    'initial_temp': st.session_state.initial_temp,
+                    'profile_df': st.session_state.profile_df.to_dict('records'),
+                    'total_profile_hours': res.get('total_time', 0),
+                    'total_profile_kwh': res.get('total_kwh_all_chambers', 0),
+                    'peak_power_kw': res.get('peak_power_kw', 0)
+                }
+                st.session_state.saved_chamber_profiles[profile_name] = data_to_save
+                st.success(f"'{profile_name}' 프로파일이 저장되었습니다.")
 
