@@ -175,6 +175,10 @@ if st.button("➕ 스텝 추가"):
     st.rerun()
 st.session_state.input_df['모드'] = st.session_state.input_df['모드'].fillna('Rest')
 st.session_state.input_df['테스트'] = st.session_state.input_df['테스트'].fillna('-')
+numeric_cols = ["전압(V)", "전류(A)", "전력(W)", "시간 제한(H)"]
+for col in numeric_cols:
+    # 에러 데이터는 NaN으로 바꾸고, 강제로 숫자(float)로 변환
+    st.session_state.input_df[col] = pd.to_numeric(st.session_state.input_df[col], errors='coerce')
 edited_df = st.data_editor(
     st.session_state.input_df,
     column_config={
