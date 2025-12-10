@@ -8,33 +8,71 @@ from scipy.interpolate import griddata
 st.set_page_config(layout="wide")
 st.title("⚡ 배터리 레시피 계산기")
 
-# --- 레시피 불러오기 UI (최상단) ---
-st.subheader("저장된 레시피 불러오기")
+# --- 1. st.session_state 초기화 및 콜백 함수 ---
+DEFAULT_SPECS = {
+    'cell_capacity': 211.10, 'equipment_spec': '60A - 300A', 'control_channels': 16,
+    'test_channels': 800, 'standby_power': 1572.0, 'cable_area': 150.0,
+    'cable_length': 3.0, 'repetition_count': 1,
+    'recipe_to_manage': '선택하세요' # 관리 UI용
+}
 
-if 'saved_recipes' in st.session_state and st.session_state.saved_recipes:
-    col_load1, col_load2 = st.columns([0.8, 0.2])
-    with col_load1:
-        recipe_keys = list(st.session_state.saved_recipes.keys())
-        recipe_to_load = st.selectbox("불러올 레시피를 선택하세요", options=recipe_keys)
-    with col_load2:
-        st.write("")
-        st.write("")
-        if st.button("📥 선택한 레시피 불러오기"):
-            if recipe_to_load:
-                loaded_data = st.session_state.saved_recipes[recipe_to_load]
-                for key, value in loaded_data.items():
-                    # 저장된 결과값은 불러오지 않음
-                    if key not in ['recipe_table', 'total_kwh', 'max_peak_power', 'total_hours', 'demand_peak_power', 'recipe_table_with_results']:
-                        st.session_state[key] = value
-                st.session_state.input_df = loaded_data['recipe_table']
-                st.success(f"'{recipe_to_load}' 레시피를 성공적으로 불러왔습니다!")
-                st.rerun()
-else:
-    st.info("저장된 레시피가 없습니다.")
+def initialize_state():
+    """세션 상태 초기화"""
+    if 'input_df' not in st.session_state: st.session_state.input_df = pd.DataFrame(columns=["모드", "테스트", "전압(V)", "전류(A)", "전력(W)", "시간 제한(H)"])
+    if 'result_df' not in st.session_state: st.session_state.result_df = pd.DataFrame()
+    if 'saved_recipes' not in st.session_state: st.session_state.saved_recipes = {}
+    if 'cp_cccv_details' not in st.session_state: st.session_state.cp_cccv_details = {}
+    for key, value in DEFAULT_SPECS.items():
+        if key not in st.session_state: st.session_state[key] = value
+
+initialize_state()
+
+def load_recipe_callback():
+    """선택한 레시피를 불러오는 콜백 함수"""
+    recipe_to_load = st.session_state.recipe_to_manage
+    if recipe_to_load != "선택하세요" and recipe_to_load in st.session_state.saved_recipes:
+        loaded_data = st.session_state.saved_recipes[recipe_to_load]
+        for key, value in loaded_data.items():
+            # 저장된 결과값은 불러오지 않음
+            if key not in ['recipe_table', 'total_kwh', 'max_peak_power', 'total_hours', 'demand_peak_power', 'recipe_table_with_results']:
+                st.session_state[key] = value
+        
+        # DataFrame과 상세 설정은 별도로 로드
+        st.session_state.input_df = pd.DataFrame(loaded_data['recipe_table'])
+        # 상세 설정의 key가 문자열로 저장되었을 수 있으므로 int로 변환
+        st.session_state.cp_cccv_details = {int(k): v for k, v in loaded_data.get('cp_cccv_details', {}).items()}
+
+        st.success(f"'{recipe_to_load}' 레시피를 성공적으로 불러왔습니다!")
+
+def delete_recipe_callback():
+    """선택한 레시피를 삭제하는 콜백 함수"""
+    recipe_to_delete = st.session_state.recipe_to_manage
+    if recipe_to_delete != "선택하세요" and recipe_to_delete in st.session_state.saved_recipes:
+        del st.session_state.saved_recipes[recipe_to_delete]
+        st.session_state.recipe_to_manage = "선택하세요"
+        st.success(f"'{recipe_to_delete}' 레시피를 삭제했습니다.")
+    else:
+        st.warning("삭제할 레시피를 먼저 선택해주세요.")
+
+
+# --- 2. 레시피 관리 UI (다른 페이지와 통일) ---
+with st.expander("📂 저장된 레시피 관리", expanded=True):
+    if not st.session_state.saved_recipes:
+        st.info("저장된 레시피가 없습니다.")
+    else:
+        col1, col2, col3 = st.columns([0.6, 0.2, 0.2])
+        with col1:
+            st.selectbox("관리할 레시피를 선택하세요",
+                         options=["선택하세요"] + list(st.session_state.saved_recipes.keys()),
+                         key="recipe_to_manage")
+        with col2:
+            st.button("📥 선택 레시피 불러오기", on_click=load_recipe_callback, use_container_width=True)
+        with col3:
+            st.button("⚠️ 선택 레시피 삭제", on_click=delete_recipe_callback, use_container_width=True)
 st.markdown("---")
 
 
-# --- 1. 효율 데이터 테이블 및 계산 함수 정의 ---
+# --- 3. 효율 데이터 테이블 및 계산 함수 정의 ---
 #<editor-fold desc="효율 계산 함수">
 COPPER_RESISTIVITY = 1.72e-8
 charge_currents = np.array([10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300])
@@ -103,24 +141,7 @@ def get_efficiency(mode, voltage, current, equipment_spec, cable_length_m, cable
     else: return np.clip(eta_adjusted, -np.inf, 1.0)
 #</editor-fold>
 
-# --- 2. 'st.session_state' 초기화 ---
-DEFAULT_SPECS = {
-    'cell_capacity': 211.10, 'equipment_spec': '60A - 300A', 'control_channels': 16,
-    'test_channels': 800, 'standby_power': 1572.0, 'cable_area': 150.0,
-    'cable_length': 3.0, 'repetition_count': 1,
-}
-
-def initialize_state():
-    if 'input_df' not in st.session_state: st.session_state.input_df = pd.DataFrame(columns=["모드", "테스트", "전압(V)", "전류(A)", "전력(W)", "시간 제한(H)"])
-    if 'result_df' not in st.session_state: st.session_state.result_df = pd.DataFrame()
-    if 'saved_recipes' not in st.session_state: st.session_state.saved_recipes = {}
-    if 'cp_cccv_details' not in st.session_state: st.session_state.cp_cccv_details = {}
-    for key, value in DEFAULT_SPECS.items():
-        if key not in st.session_state: st.session_state[key] = value
-
-initialize_state()
-
-# --- 3. 기본 정보 및 장비 사양 입력 ---
+# --- 4. 기본 정보 및 장비 사양 입력 ---
 st.subheader("기본 정보 입력"); st.number_input("셀 용량 (Ah)", key='cell_capacity', min_value=0.1, step=1.0, format="%.2f"); st.markdown("---")
 st.subheader("장비 및 배선 사양 입력")
 col1, col2, col3 = st.columns(3)
@@ -138,7 +159,7 @@ required_equipment = math.ceil(st.session_state.test_channels / st.session_state
 st.metric(label="✅ 필요 장비 수량 (자동 계산)", value=f"{required_equipment} F"); st.markdown("---")
 st.subheader("테스트 옵션"); st.number_input("레시피 반복 횟수", min_value=1, step=1, key='repetition_count'); st.markdown("---")
 
-# --- 4. 레시피 테이블 UI ---
+# --- 5. 레시피 테이블 UI ---
 #<editor-fold desc="레시피 테이블 UI">
 uploaded_file = st.file_uploader("엑셀 파일로 레시피를 업로드하세요 (A:모드, B:테스트, C:전압, D:전류, E:전력, F:시간)", type=['xlsx', 'xls'])
 if uploaded_file is not None:
@@ -177,7 +198,7 @@ if len(edited_df) < len(st.session_state.input_df):
         st.rerun()
 st.session_state.input_df = edited_df
 #</editor-fold>
-# --- 5. 상세 조건 설정 UI ---
+# --- 6. 상세 조건 설정 UI ---
 #<editor-fold desc="상세 조건 설정 UI">
 with st.expander("💡 CP / CCCV 모드 상세 조건 설정 (고급)"):
     detail_steps = {i: row for i, row in edited_df.iterrows() if row['테스트'] in ['CP', 'CCCV']}
@@ -221,7 +242,7 @@ with st.expander("💡 CP / CCCV 모드 상세 조건 설정 (고급)"):
             if step_type == 'CP': st.write(f"- **{idx+1}번 스텝 (CP):** 시작 {details.get('start_v', '자동')}V, 종료 {details.get('end_v', '미설정')}V")
             elif step_type == 'CCCV': st.write(f"- **{idx+1}번 스텝 (CCCV):** CV {details.get('cv_v')}V, Cut-off {details.get('cutoff_a')}A, 전환 {details.get('transition')}%")
 #</editor-fold>
-# --- 6. 계산 로직 ---
+# --- 7. 계산 로직 ---
 #<editor-fold desc="계산 로직">
 if st.button("⚙️ 레시피 계산 실행"):
     try:
@@ -326,7 +347,6 @@ if st.button("⚙️ 레시피 계산 실행"):
                         p_partial = (p_in_w * rem_ch) + specs.standby_power if rem_ch > 0 else 0
                         total_power_kw = (p_full_total + p_partial) / 1000.0
                     else: # Discharge
-                        # ★★★★★ 수정된 부분: 사용자의 요청에 따라 방전 전력 계산 로직 변경 ★★★★★
                         p_rec_w = voltage * current * efficiency
                         total_rec_w = p_rec_w * specs.test_channels
                         total_standby_w = specs.standby_power * required_equipment
@@ -339,7 +359,7 @@ if st.button("⚙️ 레시피 계산 실행"):
     except Exception as e:
         st.error(f"계산 중 오류가 발생했습니다: {e}")
 #</editor-fold>
-# --- 7. 결과 표시 ---
+# --- 8. 결과 표시 ---
 #<editor-fold desc="결과 표시">
 st.markdown("---")
 st.subheader("레시피 상세 결과")
@@ -371,7 +391,7 @@ if 'result_df' in st.session_state and not st.session_state.result_df.empty:
 else:
     st.info("아직 계산된 레시피 데이터가 없습니다.")
 #</editor-fold>
-# --- 8. 계산 결과 저장 ---
+# --- 9. 계산 결과 저장 ---
 st.markdown("---")
 st.subheader("💾 현재 레시피 및 결과 저장하기")
 save_name_input = st.text_input("저장할 레시피 이름을 입력하세요", key="cycler_save_name_input")
@@ -388,13 +408,12 @@ if st.button("현재 레시피 저장"):
         demand_peak_power = max_peak_power * demand_factor
 
         data_to_save = {
-            'recipe_table': st.session_state.input_df.copy(),
+            'recipe_table': st.session_state.input_df.copy().to_dict('records'), # DataFrame은 dict로 변환하여 저장
             'cp_cccv_details': st.session_state.cp_cccv_details.copy(),
             'total_kwh': total_kwh,
             'max_peak_power': max_peak_power,
             'total_hours': total_hours,
             'demand_peak_power': demand_peak_power,
-            'recipe_table_with_results': result_df.head(len(edited_df)).copy()
         }
         for key in DEFAULT_SPECS:
             data_to_save[key] = st.session_state[key]
@@ -405,13 +424,3 @@ if st.button("현재 레시피 저장"):
         st.warning("저장할 레시피가 비어있습니다.")
     else:
         st.warning("저장할 레시피 이름을 입력해주세요.")
-
-if st.session_state.saved_recipes:
-    st.markdown("---")
-    st.subheader("현재 저장된 레시피 목록")
-    st.write(list(st.session_state.saved_recipes.keys()))
-    if st.button("⚠️ 저장된 모든 레시피 삭제"):
-        st.session_state.saved_recipes = {}
-        st.session_state.cp_cccv_details = {}
-        st.rerun()
-

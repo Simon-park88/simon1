@@ -33,11 +33,9 @@ def initialize_state():
     if 'chamber_operating_days' not in st.session_state: st.session_state.chamber_operating_days = 365
     
     if 'chiller_spec_select' not in st.session_state: st.session_state.chiller_spec_select = "선택 안함"
-    # 'chiller_qty'는 더 이상 사용하지 않으므로 초기화에서 제외 가능
 
 initialize_state()
 
-# ★★★★★ 수정된 부분: 함수 인자에서 chiller_quantity 제거 ★★★★★
 def calculate_all_power(cycler_plan_df, 
                         chamber_op_mode, chamber_spec_name, chamber_quantity, chamber_profile_name,
                         chiller_spec_name):
@@ -45,7 +43,7 @@ def calculate_all_power(cycler_plan_df,
     results = {}
     plan_is_valid = True
 
-    # --- 1. 충방전기 계산 (기존과 동일) ---
+    # --- 1. 충방전기 계산 ---
     cycler_annual_kwh, cycler_peak_kw = 0.0, 0.0
     plan_total_kwh = 0.0
     plan_total_hours = cycler_plan_df["계획 시간 (H)"].sum()
@@ -81,7 +79,7 @@ def calculate_all_power(cycler_plan_df,
     
     results['cycler'] = {'peak': cycler_peak_kw, 'kwh': cycler_annual_kwh}
 
-    # --- 2. 챔버 계산 (기존과 동일) ---
+    # --- 2. 챔버 계산 ---
     chamber_annual_kwh, chamber_peak_kw = 0.0, 0.0
 
     if chamber_op_mode == "수동 계획 입력":
@@ -121,10 +119,9 @@ def calculate_all_power(cycler_plan_df,
 
     results['chamber'] = {'peak': chamber_peak_kw, 'kwh': chamber_annual_kwh}
 
-    # ★★★★★ 수정된 부분: 칠러 계산 로직 간소화 ★★★★★
+    # --- 3. 칠러 계산 ---
     chiller_annual_kwh, chiller_peak_kw = 0.0, 0.0
     if chiller_spec_name != "선택 안함" and chiller_spec_name in saved_chiller_calcs:
-        # 저장된 칠러 계산 결과에서 Peak 전력과 연간 전력량을 직접 불러옴
         spec = saved_chiller_calcs[chiller_spec_name]
         chiller_peak_kw = spec.get('peak_chiller_power', 0.0)
         chiller_annual_kwh = spec.get('annual_kwh', 0.0)
@@ -137,6 +134,15 @@ def calculate_all_power(cycler_plan_df,
     results['total'] = {'peak': total_peak_kw, 'kwh': total_annual_kwh}
     
     return results if plan_is_valid else None
+
+# ★★★★★ 추가: 프로파일 삭제 콜백 함수 ★★★★★
+def delete_summary_profile_callback(profile_name):
+    """'저장된 프로필 관리'에서 선택된 프로필을 삭제하는 콜백 함수"""
+    if profile_name in st.session_state.saved_profiles:
+        del st.session_state.saved_profiles[profile_name]
+        st.success(f"'{profile_name}' 프로필을 삭제했습니다.")
+    else:
+        st.warning("삭제할 프로필을 찾을 수 없습니다.")
 
 
 # --- 2. 데이터 불러오기 ---
@@ -191,7 +197,7 @@ with col_chamber:
             - **1회 프로파일 전력량:** {profile_data.get('total_profile_kwh'):.2f} kWh
             - **Peak 전력:** {profile_data.get('peak_power_kw'):.2f} kW
             """)
-# ★★★★★ 수정된 부분: 칠러 UI 간소화 ★★★★★
+
 with col_chiller:
     st.markdown("##### 💧 칠러")
     st.selectbox("적용할 칠러 계산 결과를 선택하세요", 
@@ -199,7 +205,6 @@ with col_chiller:
                  key="chiller_spec_select",
                  help="'칠러 용량 산정' 페이지에서 저장된 계산 결과를 불러옵니다.")
     
-    # 선택된 칠러 사양 정보 표시
     chiller_name = st.session_state.chiller_spec_select
     if chiller_name != "선택 안함" and chiller_name in saved_chiller_calcs:
         chiller_data = saved_chiller_calcs[chiller_name]
@@ -220,12 +225,11 @@ if st.button("현재 설정값으로 전력 정보 계산 및 불러오기", typ
         st.session_state.chamber_spec_select,
         st.session_state.chamber_qty,
         st.session_state.chamber_profile_select,
-        st.session_state.chiller_spec_select # chiller_quantity 제거
+        st.session_state.chiller_spec_select
     )
     if summary:
         st.session_state.current_summary = summary
 
-# --- (이하 나머지 코드는 기존과 동일) ---
 if st.session_state.current_summary:
     summary = st.session_state.current_summary
     summary_df = pd.DataFrame({
@@ -259,6 +263,7 @@ if st.session_state.current_summary:
                 st.session_state.saved_profiles[profile_name] = summary['total']
                 st.success(f"'{profile_name}' 프로필이 저장되었습니다.")
     
+    # ★★★★★ 수정된 부분: 저장된 프로필 관리 UI 및 삭제 로직 ★★★★★
     if st.session_state.saved_profiles:
         st.markdown("---")
         st.write("##### 💾 저장된 프로필 관리")
@@ -269,9 +274,8 @@ if st.session_state.current_summary:
             with col1:
                 st.info(f"**{name}**: Peak {profile_data.get('peak', 0):.2f} kW, 연간 전력량 {profile_data.get('kwh', 0):,.0f} kWh")
             with col2:
-                if st.button("삭제", key=f"delete_{name}"):
-                    del st.session_state.saved_profiles[name]
-                    st.rerun()
+                # 각 버튼에 고유한 key를 부여하고, on_click에 콜백 함수와 인자를 전달
+                st.button("삭제", key=f"delete_{name}", on_click=delete_summary_profile_callback, args=(name,))
 
 st.markdown("---")
 
