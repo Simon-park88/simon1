@@ -6,7 +6,7 @@ from scipy.interpolate import griddata
 
 # --- 페이지 기본 설정 ---
 st.set_page_config(layout="wide", page_title="배터리 레시피 계산기")
-st.title("⚡ 배터리 레시피 계산기 (Fix Ver.)")
+st.title("⚡ 배터리 레시피 계산기 (Final Fix)")
 
 # --- 1. st.session_state 초기화 및 콜백 함수 ---
 DEFAULT_SPECS = {
@@ -146,6 +146,7 @@ def get_efficiency(mode, voltage, current, equipment_spec, cable_length_m, cable
     else: return np.clip(eta_adjusted, -np.inf, 1.0)
 # </editor-fold>
 
+
 # --- 4. 기본 정보 및 장비 사양 입력 ---
 st.subheader("기본 정보 입력")
 st.number_input("셀 용량 (Ah)", key='cell_capacity', min_value=0.1, step=1.0, format="%.2f")
@@ -171,7 +172,7 @@ st.number_input("레시피 반복 횟수", min_value=1, step=1, key='repetition_
 st.markdown("---")
 
 
-# --- 5. 레시피 테이블 UI (★ 핵심 수정 부분 ★) ---
+# --- 5. 레시피 테이블 UI (★ 이 부분이 에러의 핵심입니다 ★) ---
 # <editor-fold desc="레시피 테이블 UI">
 uploaded_file = st.file_uploader("엑셀 파일로 레시피를 업로드하세요 (A:모드, B:테스트, C:전압, D:전류, E:전력, F:시간)", type=['xlsx', 'xls'])
 if uploaded_file is not None:
@@ -189,21 +190,28 @@ if st.button("➕ 스텝 추가"):
     st.rerun()
 
 # -------------------------------------------------------------
-# [FIX] 에러 방지를 위한 강력한 형변환 코드 (최종 수정: 조건문 제거)
+# [FINAL FIX] 데이터 에디터 진입 전 '초강력' 타입 교정
+# 이 코드가 없으면 순서에 따라 'Object' 타입으로 오인식되어 에러가 납니다.
 # -------------------------------------------------------------
-# NaN 값 처리
-st.session_state.input_df['모드'] = st.session_state.input_df['모드'].fillna('Rest')
-st.session_state.input_df['테스트'] = st.session_state.input_df['테스트'].fillna('-')
+# 1. 인덱스 초기화 (에디터 에러 방지용 필수)
+st.session_state.input_df.reset_index(drop=True, inplace=True)
 
-# 숫자 컬럼 강제 형변환 (이 부분이 있어야 data_editor 에러가 안 납니다)
+# 2. 문자열(Selectbox) 컬럼 강제 교정
+# NaN이나 None이 있으면 문자열로 처리되지 않아 Selectbox가 깨집니다.
+str_cols = {"모드": "Rest", "테스트": "-"}
+for col, default_val in str_cols.items():
+    if col in st.session_state.input_df.columns:
+        # 빈 값은 기본값으로 채우고, 무조건 문자열(str)로 변환
+        st.session_state.input_df[col] = st.session_state.input_df[col].fillna(default_val).astype(str)
+
+# 3. 숫자(Number) 컬럼 강제 교정
+# 데이터가 있든 없든 무조건 float64로 박제해야 합니다.
 numeric_cols = ["전압(V)", "전류(A)", "전력(W)", "시간 제한(H)"]
-# 데이터가 있든 없든(0행이라도) 컬럼 타입을 강제로 지정해야 합니다.
-# 기존 코드의 'if not empty' 조건이 비어있는 초기 상태에서 타입 지정을 막아 에러를 유발했습니다.
 for col in numeric_cols:
     if col in st.session_state.input_df.columns:
-        # 1. 엉뚱한 문자나 공백이 있으면 NaN으로 변환
+        # 1. 엉뚱한 문자나 공백 -> NaN 변환
         st.session_state.input_df[col] = pd.to_numeric(st.session_state.input_df[col], errors='coerce')
-        # 2. 강제로 float64(실수) 타입으로 고정.
+        # 2. 무조건 실수형(float64)으로 고정
         st.session_state.input_df[col] = st.session_state.input_df[col].astype('float64')
 # -------------------------------------------------------------
 
@@ -573,3 +581,10 @@ if st.button("현재 레시피 저장"):
         st.warning("저장할 레시피가 비어있습니다.")
     else:
         st.warning("저장할 레시피 이름을 입력해주세요.")
+
+# --- [비상용] 데이터 꼬임 방지용 초기화 버튼 ---
+st.markdown("---")
+if st.button("🚨 에러 해결용 데이터 강제 초기화 (누르면 새로고침 됨)"):
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
