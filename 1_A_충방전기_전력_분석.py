@@ -189,7 +189,7 @@ if st.button("➕ 스텝 추가"):
     st.rerun()
 
 # -------------------------------------------------------------
-# [FIX] 에러 방지를 위한 강력한 형변환 코드
+# [FIX] 에러 방지를 위한 강력한 형변환 코드 (최종 수정: 조건문 제거)
 # -------------------------------------------------------------
 # NaN 값 처리
 st.session_state.input_df['모드'] = st.session_state.input_df['모드'].fillna('Rest')
@@ -197,12 +197,14 @@ st.session_state.input_df['테스트'] = st.session_state.input_df['테스트'].
 
 # 숫자 컬럼 강제 형변환 (이 부분이 있어야 data_editor 에러가 안 납니다)
 numeric_cols = ["전압(V)", "전류(A)", "전력(W)", "시간 제한(H)"]
-if not st.session_state.input_df.empty:
-    for col in numeric_cols:
+# 데이터가 있든 없든(0행이라도) 컬럼 타입을 강제로 지정해야 합니다.
+# 기존 코드의 'if not empty' 조건이 비어있는 초기 상태에서 타입 지정을 막아 에러를 유발했습니다.
+for col in numeric_cols:
+    if col in st.session_state.input_df.columns:
         # 1. 엉뚱한 문자나 공백이 있으면 NaN으로 변환
         st.session_state.input_df[col] = pd.to_numeric(st.session_state.input_df[col], errors='coerce')
-        # 2. 강제로 float(실수) 타입으로 고정. (정수형으로 인식되면 소수점 입력 시 에러남)
-        st.session_state.input_df[col] = st.session_state.input_df[col].astype(float)
+        # 2. 강제로 float64(실수) 타입으로 고정.
+        st.session_state.input_df[col] = st.session_state.input_df[col].astype('float64')
 # -------------------------------------------------------------
 
 edited_df = st.data_editor(
